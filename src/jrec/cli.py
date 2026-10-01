@@ -5,6 +5,8 @@
   jrec import [MOUNT] [--pick 1,3-5] [--yes]
                                      preview, ask, then copy new files into the archive
   jrec sources                       archived recordings with start times and flags
+  jrec cut                           find conversations in new archive files, cut verifiable clips
+  jrec verify [FOLDER ...]           re-check clip hashes against the archived originals
 """
 import argparse
 import json
@@ -112,6 +114,53 @@ def cmd_sources(cfg, a):
               f"{r['device']}:{r['orig_path']}  {flags}")
 
 
+def _sources(cfg, con, only_new=True):
+    from datetime import datetime
+    from .cutter import Src
+    done = {r[0] for r in con.execute("SELECT DISTINCT json_extract(value, '$.source_sha256') FROM conversation, "
+                                       "json_each(json_extract(manifest, '$.parts'))")}
+    for r in con.execute("SELECT * FROM source ORDER BY start"):
+        if only_new and r["sha256"] in done:
+            continue
+        yield Src(r["sha256"], r["ext"], cfg.archive / f"{r['sha256']}.{r['ext']}", datetime.fromisoformat(r["start"]),
+                  r["duration"], r["orig_path"], r["device"],
+                  {"start": r["start"], "source": r["start_source"], "confidence": r["start_conf"],
+                   "flags": json.loads(r["flags"])})
+
+
+def cmd_cut(cfg, a):
+    from . import cutter
+    con = db.connect(cfg.db_path)
+    out = cfg.library / "conversations"
+    srcs = list(_sources(cfg, con, only_new=not a.all))
+    if not srcs:
+        print("no new archive files to cut")
+        return
+    for stream in cutter.streams(srcs):
+        names = " + ".join(s.orig_path.rsplit("/", 1)[-1] for s in stream)
+        print(f"stream {names}: running VAD …", flush=True)
+        for m in cutter.cut_stream(stream, out):
+            w = m["window"]
+            con.execute("INSERT OR REPLACE INTO conversation (folder, start, end, speech_start, speech_end, speech_sec,"
+                        " manifest) VALUES (?,?,?,?,?,?,?)",
+                        (m["conversation"], w["start"], w["end"], w["speech_start"], w["speech_end"], w["speech_sec"],
+                         json.dumps(m)))
+            con.commit()
+            print(f"  {m['conversation']}: speech {w['speech_start'][11:19]}-{w['speech_end'][11:19]} "
+                  f"({w['speech_sec']:.0f}s), clip {w['start'][11:19]}-{w['end'][11:19]}, {len(m['parts'])} part(s)")
+
+
+def cmd_verify(cfg, a):
+    from . import cutter
+    folders = [Path(f) for f in a.folders] or sorted((cfg.library / "conversations").glob("*/"))
+    bad = 0
+    for f in folders:
+        probs = cutter.verify_folder(f, cfg.archive)
+        bad += bool(probs)
+        print(f"{'OK  ' if not probs else 'FAIL'} {f.name}" + "".join(f"\n     {p}" for p in probs))
+    sys.exit(1 if bad else 0)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="jrec", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config")
@@ -122,9 +171,12 @@ def main(argv=None):
     i.add_argument("--pick", help="numbers from the preview, e.g. 1,3-5 (default: all new)")
     i.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     sub.add_parser("sources")
+    c = sub.add_parser("cut"); c.add_argument("--all", action="store_true", help="re-cut already cut sources too")
+    v = sub.add_parser("verify"); v.add_argument("folders", nargs="*")
     a = ap.parse_args(argv)
     cfg = config.load(a.config)
-    {"devices": cmd_devices, "scan": cmd_scan, "import": cmd_import, "sources": cmd_sources}[a.cmd](cfg, a)
+    {"devices": cmd_devices, "scan": cmd_scan, "import": cmd_import, "sources": cmd_sources,
+     "cut": cmd_cut, "verify": cmd_verify}[a.cmd](cfg, a)
 
 
 if __name__ == "__main__":
