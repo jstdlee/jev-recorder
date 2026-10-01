@@ -39,6 +39,32 @@ def windows(regions, total, gap=GAP, min_speech=MIN_SPEECH, pad=PAD):
     return [Window(*w) for w in out]
 
 
+def chunks(regions, start, end, max_len=30.0, min_len=10.0):
+    """Cover [start, end] with contiguous ASR chunks of at most max_len seconds.
+
+    Nothing is dropped: VAD only chooses where to cut. Each cut lands in the middle of
+    the widest VAD silence that falls between min_len and max_len into the chunk, or
+    falls back to a hard cut at max_len.
+    """
+    gaps = []  # (gap_start, gap_end) between consecutive speech regions
+    regs = sorted(r for r in regions if r[1] > start and r[0] < end)
+    for (_, e1), (s2, _) in zip(regs, regs[1:]):
+        if s2 > e1:
+            gaps.append((e1, s2))
+    out, t = [], start
+    while end - t > max_len:
+        lo, hi = t + min_len, t + max_len
+        cands = [(min(g1, hi) - max(g0, lo), g0, g1) for g0, g1 in gaps if g1 > lo and g0 < hi]
+        if cands:
+            _, g0, g1 = max(cands)
+            cut = (max(g0, lo) + min(g1, hi)) / 2
+        else:
+            cut = hi
+        out.append((t, cut)); t = cut
+    out.append((t, end))
+    return out
+
+
 def speech_regions(audio16k, threshold=0.5, min_silence_ms=500):
     """Silero VAD over a 16 kHz mono float array -> [(start, end)] seconds."""
     import torch

@@ -8,7 +8,7 @@ Writes results/asr_<model>.jsonl and prints a CER/WER table.
 
 usage: asr_bench.py MODEL [--n 60] [--langs ...] [--conds clean,noisy]
 """
-import argparse, csv, json, random, re, sys, time, unicodedata
+import argparse, csv, json, random, re, sys, time, unicodedata, zlib
 from pathlib import Path
 
 import numpy as np
@@ -60,7 +60,7 @@ def add_noise(clean, key, snr_db=5.0):
     if _babble_pool is None:
         _babble_pool = [read16k(DATA / "fleurs" / l / "test" / f)
                         for l in LANGS for f, _ in load_set(l, 4, seed=99)]
-    rng = np.random.default_rng(abs(hash(key)) % 2**32)
+    rng = np.random.default_rng(zlib.crc32(key.encode()))
     n = len(clean)
     bab = np.zeros(n, np.float32)
     for i in rng.choice(len(_babble_pool), 3, replace=False):
@@ -77,9 +77,9 @@ def load_audio(lang, fname, cond):
     clean = read16k(DATA / "fleurs" / lang / "test" / fname)
     if cond == "clean":
         return clean
-    noisy = add_noise(clean, f"{lang}/{fname}")
-    if cond == "noisy":
-        return noisy
+    if cond == "noisy":  # the saved set from enhance_bench.py, so every model and enhancer sees the same noise
+        saved = DATA / "noisy48" / lang / fname
+        return read16k(saved) if saved.exists() else add_noise(clean, f"{lang}/{fname}")
     enh = DATA / "enhanced" / cond / lang / fname  # produced by enhance_bench.py
     if not enh.exists():
         raise FileNotFoundError(enh)
@@ -123,11 +123,11 @@ def score(rows):
 
 # ---------- models ----------
 class QwenASR:
-    def __init__(self, size):
+    def __init__(self, repo):
         import torch
         from qwen_asr import Qwen3ASRModel
         self.m = Qwen3ASRModel.from_pretrained(
-            f"Qwen/Qwen3-ASR-{size}", dtype=torch.bfloat16, device_map="cuda:0",
+            repo, dtype=torch.bfloat16, device_map="cuda:0",
             max_inference_batch_size=16, max_new_tokens=512)
 
     def run(self, audios, lang):
@@ -149,8 +149,9 @@ class Whisper:
 
 
 MODELS = {
-    "qwen3-asr-1.7b": lambda: QwenASR("1.7B"),
-    "qwen3-asr-0.6b": lambda: QwenASR("0.6B"),
+    "qwen3-asr-1.7b": lambda: QwenASR("Qwen/Qwen3-ASR-1.7B"),
+    "qwen3-asr-0.6b": lambda: QwenASR("Qwen/Qwen3-ASR-0.6B"),
+    "confucius4-r2t2": lambda: QwenASR("netease-youdao/Confucius4-R2T2"),  # Qwen3-ASR fine-tune, offline mode
     "whisper-large-v3": lambda: Whisper("whisper-large-v3"),
     "whisper-large-v3-turbo": lambda: Whisper("whisper-large-v3-turbo"),
 }

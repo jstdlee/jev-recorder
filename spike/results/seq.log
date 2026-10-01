@@ -1,0 +1,88 @@
+##### qwen3-asr-1.7b 01:11:30
+load 37.1s
+cmn_hans_cn  dfn3        711s audio in  45.7s (x16 realtime)
+cmn_hans_cn  dfn3a12     711s audio in  11.2s (x63 realtime)
+cmn_hans_cn  mf2         712s audio in  14.7s (x49 realtime)
+en_us        noisy       546s audio in  13.5s (x41 realtime)
+en_us        dfn3        544s audio in  10.5s (x52 realtime)
+en_us        dfn3a12     544s audio in  13.7s (x40 realtime)
+en_us        mf2         546s audio in  13.8s (x39 realtime)
+ms_my        noisy       670s audio in  18.3s (x37 realtime)
+ms_my        dfn3        669s audio in 1305.7s (x1 realtime)
+ms_my        dfn3a12     669s audio in  23.4s (x29 realtime)
+skip (no enhanced audio) ms_my mf2 /home/leilei/dev/jev/jev-recorder/spike/data/enhanced/mf2/ms_my/11939901091948201082.wav
+id_id        noisy       788s audio in  27.3s (x29 realtime)
+id_id        dfn3        786s audio in  23.9s (x33 realtime)
+id_id        dfn3a12     786s audio in  20.1s (x39 realtime)
+skip (no enhanced audio) id_id mf2 /home/leilei/dev/jev/jev-recorder/spike/data/enhanced/mf2/id_id/5859759575043273550.wav
+ta_in        noisy       765s audio in  45.8s (x17 realtime)
+ta_in        dfn3        764s audio in  80.3s (x10 realtime)
+ta_in        dfn3a12     764s audio in  47.8s (x16 realtime)
+skip (no enhanced audio) ta_in mf2 /home/leilei/dev/jev/jev-recorder/spike/data/enhanced/mf2/ta_in/13666757849386478413.wav
+th_th        noisy       807s audio in  39.9s (x20 realtime)
+th_th        dfn3        805s audio in  40.1s (x20 realtime)
+th_th        dfn3a12     805s audio in  41.2s (x20 realtime)
+skip (no enhanced audio) th_th mf2 /home/leilei/dev/jev/jev-recorder/spike/data/enhanced/mf2/th_th/3659100528384807541.wav
+vi_vn        noisy       811s audio in  55.3s (x15 realtime)
+vi_vn        dfn3        809s audio in  18.6s (x43 realtime)
+vi_vn        dfn3a12     809s audio in  18.9s (x43 realtime)
+skip (no enhanced audio) vi_vn mf2 /home/leilei/dev/jev/jev-recorder/spike/data/enhanced/mf2/vi_vn/14566257005506189223.wav
+  cmn_hans_cn  clean      CER   6.2%
+  cmn_hans_cn  dfn3       CER  38.2%
+  cmn_hans_cn  dfn3a12    CER  24.9%
+  cmn_hans_cn  mf2        CER  27.5%
+  cmn_hans_cn  noisy      CER  53.8%
+  en_us        clean      WER   4.7%
+  en_us        dfn3       WER  77.4%
+  en_us        dfn3a12    WER  16.7%
+  en_us        mf2        WER  12.7%
+  en_us        noisy      WER  12.1%
+  id_id        clean      WER   6.3%
+  id_id        dfn3       WER  27.1%
+  id_id        dfn3a12    WER  21.9%
+  id_id        noisy      WER  22.7%
+  ms_my        clean      WER  12.3%
+  ms_my        dfn3       WER  37.8%
+  ms_my        dfn3a12    WER  28.7%
+  ms_my        noisy      WER  27.9%
+  ta_in        clean      WER 142.9%
+  ta_in        dfn3       WER 193.1%
+  ta_in        dfn3a12    WER 155.3%
+  ta_in        noisy      WER 148.3%
+  th_th        clean      CER   7.8%
+  th_th        dfn3       CER  26.2%
+  th_th        dfn3a12    CER  16.9%
+  th_th        noisy      CER  15.6%
+  vi_vn        clean      WER   5.4%
+  vi_vn        dfn3       WER  30.7%
+  vi_vn        dfn3a12    WER  19.6%
+  vi_vn        noisy      WER  20.5%
+  yue_hant_hk  clean      CER   7.2%
+  yue_hant_hk  dfn3       CER  15.2%
+  yue_hant_hk  dfn3a12    CER  10.7%
+  yue_hant_hk  mf2        CER  11.8%
+  yue_hant_hk  noisy      CER  10.9%
+##### qwen3-asr-0.6b 01:44:23
+load 21.5s
+ta_in        noisy       765s audio in  43.7s (x18 realtime)
+th_th        clean       807s audio in  31.1s (x26 realtime)
+th_th        noisy       807s audio in  62.0s (x13 realtime)
+vi_vn        clean       811s audio in  14.9s (x54 realtime)
+vi_vn        noisy       811s audio in  15.7s (x52 realtime)
+  cmn_hans_cn  clean      CER   6.9%
+  cmn_hans_cn  noisy      CER  18.6%
+  en_us        clean      WER   5.1%
+  en_us        noisy      WER  17.3%
+  id_id        clean      WER   9.4%
+  id_id        noisy      WER  31.3%
+  ms_my        clean      WER  16.7%
+  ms_my        noisy      WER  43.1%
+  ta_in        clean      WER 128.9%
+  ta_in        noisy      WER 137.7%
+  th_th        clean      CER   8.4%
+  th_th        noisy      CER  19.3%
+  vi_vn        clean      WER   8.5%
+  vi_vn        noisy      WER  25.5%
+  yue_hant_hk  clean      CER   8.1%
+  yue_hant_hk  noisy      CER  13.9%
+##### whisper-large-v3-turbo 01:47:34

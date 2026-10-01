@@ -12,3 +12,4 @@ library/
 spike/bin/
 *.egg-info/
 .pytest_cache/
+.venv-vllm/

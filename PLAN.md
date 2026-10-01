@@ -160,6 +160,14 @@ auto_import = false
   The padding can cross file boundaries within a stitched stream
 - Optional M5+: an audio-event classifier (PANNs or BEATs) tags music, TV and machinery,
   so "non-useful" sound is marked rather than cut. Cutting it would break rule 2
+- **M0 finding:** on quiet far-field audio (a table mic at about -35 dBFS), Silero at
+  its default threshold missed **25 %** of real speech. So VAD is used **only to find
+  conversations** (gap merging absorbs the misses). Inside a window, ASR gets **all**
+  the audio as contiguous chunks of 30 s or less, cut in VAD silences
+  (`segment.chunks()`). Nothing in a conversation is skipped, which also keeps the
+  transcript trustworthy. On the synthetic 2 h TX660 file, VAD + `windows()` found both
+  conversations with exact ±10 min padding and dropped the 3 s blip. VAD ran at
+  185x real time on CPU
 
 ### 4.4 Enhancement (separate track)
 - Default: **DeepFilterNet3** (MIT/Apache, fast, works well for real recorder noise)
@@ -251,3 +259,25 @@ Optional: an OpenTimestamps proof of the manifest hash (shows the manifest exist
 1. ~~Recorder~~: Sony ICD-TX660 (see 4.2a)
 2. Languages in the recordings (zh / en / ms / mixed / dialects?)
 3. Should imported files ever be deleted from the device? (default: never)
+                                                                                                                                                                                                                       
+## 8. M0 decisions (2026-10-02; full tables in spike/results/M0_REPORT_TABLES.md)
+- **ASR: Qwen3-ASR-1.7B** (decided by the user). On FLEURS clean it scores CER 7.2 yue / 6.2 cmn,
+  WER 4.7 en / 12.3 ms / 6.3 id / 5.4 vi, and CER 7.8 th. It runs at ~25-40x real time on
+  Transformers; vLLM is being measured.
+  - **Per-conversation language hint:** detect the majority language over the first chunks,
+    then force it (`language=`) for the rest. In 5 dB babble, 10 of 60 Mandarin clips came
+    out as transcripts of the *background* Malay/English talkers.
+  - **Tamil** (and anything outside Qwen's 30 languages) gets a separate LID step, then
+    Whisper. Qwen's own LID labels Tamil as Malay or Hindi and produces garbage.
+- **ASR input is the raw audio**, never the fully denoised track. DeepFilterNet3 at full
+  suppression pushed English WER from 12 % to 77 %. Gentle mixing (`-a 12`) is neutral.
+  MossFormer2 is no better and only ~1x real time, so it is dropped.
+- **Listening track:** DeepFilterNet3 `-a 12` (CPU binary, official aarch64 release).
+- **Word timestamps:** Qwen3-ForcedAligner (zh/yue/en/ja/ko) and MMS ctc-forced-aligner
+  (ms/id/th/vi/ta/...).
+- **Diarization: Nemotron 3 Diarization** (Transformers-native). DER is 10-16 % on
+  AliMeeting far-field and 25 % on AMI, at ~250x real time.
+- **VAD only finds conversations.** ASR covers every second inside a conversation (see 4.3).
+- **Ops:** the GB10 hard-reset twice when GPU jobs ran alongside a 20-core Blender render.
+  CPU zones reached 95 °C, and the critical trip is 104 °C. Batch jobs run one at a time,
+  under a thermal guard that pauses at 95 °C and resumes at 85 °C.

@@ -1,1 +1,18 @@
 OneLogger: Setting error_handling_strategy to DISABLE_QUIETLY_AND_REPORT_METRIC_ERROR for rank (rank=0) with OneLogger disabled. To override: explicitly set error_handling_strategy parameter.
+    Error(s):	Error in call to target 'nemo.collections.asr.modules.transformer_encoder.TransformerEncoder':
+    ValueError("self_attention_model='rope' is not supported. Currently only 'abs_pos', 'rel_pos', and 'no_pos' (or None) are available.")
+        raise ValueError(
+    ValueError: self_attention_model='rope' is not supported. Currently only 'abs_pos', 'rel_pos', and 'no_pos' (or None) are available.
+    hydra.errors.InstantiationException: Error in call to target 'nemo.collections.asr.modules.transformer_encoder.TransformerEncoder':
+    ValueError("self_attention_model='rope' is not supported. Currently only 'abs_pos', 'rel_pos', and 'no_pos' (or None) are available.")
+    raise ValueError(
+ValueError: self_attention_model='rope' is not supported. Currently only 'abs_pos', 'rel_pos', and 'no_pos' (or None) are available.
+hydra.errors.InstantiationException: Error in call to target 'nemo.collections.asr.modules.transformer_encoder.TransformerEncoder':
+ValueError("self_attention_model='rope' is not supported. Currently only 'abs_pos', 'rel_pos', and 'no_pos' (or None) are available.")
+httpx2.HTTPStatusError: Client error '403 Forbidden' for url 'https://huggingface.co/pyannote/speaker-diarization-community-1/resolve/main/config.yaml'
+    _raise_on_head_call_error(head_call_error, force_download, local_files_only)
+  File "/home/leilei/dev/jev/jev-recorder/.venv-enh/lib/python3.12/site-packages/huggingface_hub/file_download.py", line 1953, in _raise_on_head_call_error
+    raise head_call_error
+huggingface_hub.errors.GatedRepoError: 403 Client Error. (Request ID: Root=1-6abe70d2-54e53a2c509022bb74a18f2a;2c31e0cf-31a5-4749-b959-fd61fe31e3f7)
+nemotron   DER   0.0%  
+pyannote   DER   0.0%  

@@ -52,19 +52,23 @@ def prep():
 def run(model):
     out = OUT / model; out.mkdir(parents=True, exist_ok=True)
     wavs = sorted(EVAL.glob("*.wav"))
-    if model == "nemotron":
-        from nemo.collections.asr.models import SortformerEncLabelModel
-        m = SortformerEncLabelModel.from_pretrained("nvidia/Nemotron-3-Diarization").eval().cuda()
-        sm = m.sortformer_modules  # offline-ish settings from the model card
-        sm.chunk_len, sm.chunk_right_context, sm.fifo_len, sm.spkcache_update_period = 340, 40, 40, 300
-        m._check_streaming_parameters()
+    if model == "nemotron":  # Transformers-native (built from source, see .venv-nemo)
+        import soundfile as sf, torch
+        from transformers import AutoModelForAudioFrameClassification, AutoProcessor
+        mid = "nvidia/Nemotron-3-Diarization"
+        proc = AutoProcessor.from_pretrained(mid)
+        m = AutoModelForAudioFrameClassification.from_pretrained(mid, device_map="cuda")
         for w in wavs:
-            t = time.time(); segs = m.diarize(audio=[str(w)], batch_size=1)[0]
+            t = time.time()
+            audio, sr = sf.read(w, dtype="float32")
+            inputs = proc(audio, sampling_rate=sr).to(m.device, dtype=m.dtype)
+            with torch.inference_mode():
+                logits = m(**inputs).logits
+            segs = proc.extract_speaker_dict(logits, inputs.attention_mask)[0]
             with open(out / f"{w.stem}.rttm", "w") as f:
                 for s in segs:
-                    st, en, spk = s.split()[:3]
-                    f.write(f"SPEAKER {w.stem} 1 {float(st):.3f} {float(en)-float(st):.3f} <NA> <NA> {spk} <NA> <NA>\n")
-            print(f"nemotron {w.stem} {time.time()-t:.1f}s", flush=True)
+                    f.write(f"SPEAKER {w.stem} 1 {s['Start']:.3f} {s['End']-s['Start']:.3f} <NA> <NA> spk{s['Speaker']} <NA> <NA>\n")
+            print(f"nemotron {w.stem} {len(audio)/sr/60:.0f} min in {time.time()-t:.1f}s", flush=True)
     elif model == "pyannote":
         import torch
         from pyannote.audio import Pipeline
