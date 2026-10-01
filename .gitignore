@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+spike/data/
+spike/models/
+*.mp3
+*.wav
+*.flac
+*.opus
+library/
+.venv-enh/
+.venv-nemo/
+spike/bin/
+*.egg-info/
+.pytest_cache/
