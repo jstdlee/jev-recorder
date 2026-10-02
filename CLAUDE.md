@@ -26,7 +26,15 @@ with ±10 min raw padding (byte-exact clips + manifest) → Qwen3-ASR-1.7B trans
   `DISPLAY=:99 __GLX_VENDOR_LIBRARY_NAME=mesa LIBGL_ALWAYS_SOFTWARE=1` and `jrec ui --ui-script "open:1,wait:1.5,shot:/path.png"`.
   Never send key events to the user's display `:1`. Opt-in pytest: `JREC_UI_TEST_DISPLAY=:99`.
 
+## UI (src/jrec/ui/)
+app.py (layout, jobs, keys, --ui-script steps), timeline.py, transcript.py, dialogs.py, player.py (ffplay child:
+speed/sound/channel), flags.py (drawn flags), data.py. Styling: polish-ui skill via theme.py tokens.
+Script steps for screenshots: open:N wait:S seek:T find:Q ab:A-B note:T/text row:N rowsel:N viewlang:L
+importdlg:PATH fakejob:i/n/stage/d/t progress settings theme:Dark|Light size:1.5 shot:PATH.
+Use a hard-linked copy of ~/jrec-demo/lib for screenshots that write notes/translations.
+
 ## Open items (2026-10-02)
 - Vault: age per-file, password + recovery key, lossless only; **waiting for the user's OK to build**.
 - Segments split mid-sentence at the 25 s limit; merge at sentence boundaries.
 - Tamil LID → Whisper fallback; Sony track-mark timestamps (needs a real TX660 file); vLLM backend.
+- Summaries/translation need an LLM server (Qwen3.8 TensorFold on :8888 is stopped by default).
