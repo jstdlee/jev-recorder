@@ -1,9 +1,12 @@
-"""Config: ~/.config/jrec/config.toml (or $JREC_CONFIG). Built-in defaults cover the Sony ICD-TX660."""
+"""Config: <config dir>/config.toml (or $JREC_CONFIG); <config dir> is ~/.config/jrec, %APPDATA%\\jrec or
+~/Library/Application Support/jrec (see paths.py). Built-in defaults cover the Sony ICD-TX660."""
 import json
 import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .paths import config_dir
 
 DEFAULT = """
 library = "~/jrec-library"
@@ -71,7 +74,7 @@ class Config:
     @property
     def llm_override_path(self):
         """LLM settings edited in the app: merged over [llm] from the config file."""
-        return (self.path.parent if self.path else Path("~/.config/jrec").expanduser()) / "llm.json"
+        return (self.path.parent if self.path else config_dir()) / "llm.json"
 
     def save_section(self, section, values):
         """Save app-edited values for 'jev', 'analysis' or 'asr' into the override file."""
@@ -117,7 +120,7 @@ class Config:
 
 
 def load(path=None):
-    path = Path(path or os.environ.get("JREC_CONFIG", "~/.config/jrec/config.toml")).expanduser()
+    path = Path(path or os.environ.get("JREC_CONFIG") or config_dir() / "config.toml").expanduser()
     data = tomllib.loads(path.read_text() if path.exists() else DEFAULT)
     devices = [Device(**d) for d in data.get("device", [])] or \
               [Device(**d) for d in tomllib.loads(DEFAULT)["device"]]

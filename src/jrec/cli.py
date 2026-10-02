@@ -329,7 +329,8 @@ def cmd_ui(cfg, a):
     import traceback
     from . import ui
     # a launch log, so a window that closes by itself leaves a trace (segfaults included)
-    log_path = Path("~/.cache/jrec/ui.log").expanduser()
+    from .paths import cache_dir
+    log_path = cache_dir() / "ui.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log = open(log_path, "a", buffering=1)
     faulthandler.enable(log)

@@ -6,6 +6,8 @@ from imgui_bundle import imgui
 
 from .. import db
 from .. import cohere_asr
+from .. import i18n
+from ..i18n import T
 from .. import theme as th
 from ..theme import C
 from . import anim
@@ -15,21 +17,52 @@ from .timeline import fmt_offset
 TRANSLATE_TARGETS = ["English", "Chinese", "Cantonese", "Malay"]
 
 
-def _center(width):
+PREFS = {}   # the app's prefs (set by App): dialog positions persist under "dlg_pos"
+
+
+def _center(width, name=None):
+    """First open: centred. Once dragged: where you left it, per dialog (double-click empty space re-centres)."""
     vp = imgui.get_main_viewport()
-    # centred every frame (the height is only known after the first frame; no title bar to drag anyway)
-    imgui.set_next_window_pos(imgui.ImVec2(vp.work_pos.x + vp.work_size.x / 2, vp.work_pos.y + vp.work_size.y / 2),
-                              imgui.Cond_.always, imgui.ImVec2(0.5, 0.5))
+    pos = PREFS.get("dlg_pos", {}).get(name) if name else None
+    if pos:
+        imgui.set_next_window_pos(imgui.ImVec2(*pos), imgui.Cond_.appearing)
+    else:   # centred every frame until moved (the height is only known after the first frame)
+        imgui.set_next_window_pos(imgui.ImVec2(vp.work_pos.x + vp.work_size.x / 2, vp.work_pos.y + vp.work_size.y / 2),
+                                  imgui.Cond_.always, imgui.ImVec2(0.5, 0.5))
     w = min(width, vp.work_size.x - 60)
     imgui.set_next_window_size(imgui.ImVec2(w, 0), imgui.Cond_.always)
     # never taller than the window: long dialogs scroll inside
     imgui.set_next_window_size_constraints(imgui.ImVec2(w, 0), imgui.ImVec2(w, vp.work_size.y * 0.88))
 
 
+def _track_move(name):
+    """Inside an open dialog: remember a drag, keep the dialog inside the app window."""
+    vp = imgui.get_main_viewport()
+    p, sz = imgui.get_window_pos(), imgui.get_window_size()
+    store = PREFS.setdefault("dlg_pos", {})
+    hovered = imgui.is_window_hovered() and not imgui.is_any_item_hovered()
+    if hovered and imgui.is_mouse_double_clicked(0) and name in store:
+        del store[name]
+        th.save_prefs(PREFS)
+        return
+    moving = imgui.is_mouse_dragging(0) and not imgui.is_any_item_active() and imgui.is_window_focused()
+    if moving or name in store:
+        x = min(max(p.x, vp.work_pos.x - sz.x + 48), vp.work_pos.x + vp.work_size.x - 48)
+        y = min(max(p.y, vp.work_pos.y), vp.work_pos.y + vp.work_size.y - 48)
+        if (x, y) != (p.x, p.y) and not moving:
+            imgui.set_window_pos(imgui.ImVec2(x, y))
+        if store.get(name) != [x, y]:
+            store[name] = [x, y]
+            if not moving:
+                th.save_prefs(PREFS)
+    if imgui.is_mouse_released(0) and name in store:
+        th.save_prefs(PREFS)
+
+
 def _begin_modal(name, open_flag, width):
     if open_flag and not imgui.is_popup_open(name):
         imgui.open_popup(name)
-    _center(width)
+    _center(width, name)
     imgui.push_style_color(imgui.Col_.popup_bg, C("bg"))
     imgui.push_style_var(imgui.StyleVar_.alpha, anim.fade_in(name, imgui.is_popup_open(name)))
     opened, _ = imgui.begin_popup_modal(name, None, imgui.WindowFlags_.no_saved_settings | imgui.WindowFlags_.no_title_bar)
@@ -39,6 +72,8 @@ def _begin_modal(name, open_flag, width):
         imgui.close_current_popup()
         imgui.end_popup()
         return None
+    if opened:
+        _track_move(name)
     return opened
 
 
@@ -67,7 +102,7 @@ def _settings_rows(app):
                 setter(v)
         return render
 
-    getter = {"theme": lambda: app.prefs["theme"], "size": lambda: app.prefs["text_size"],
+    getter = {"theme": lambda: app.prefs["theme"], "lang": lambda: app.prefs.get("lang", "system"), "size": lambda: app.prefs["text_size"],
               "axis": lambda: app.prefs["axis"], "dspeed": lambda: app.player.speed,
               "dskip": lambda: app.skip_silence, "dsound": lambda: app.player.sound,
               "chunk": lambda: int(prof.get("chunk_chars", 256000)), "overlap": lambda: int(prof.get("overlap_chars", 8000)),
@@ -147,8 +182,10 @@ def _settings_rows(app):
         return render
 
     return [
-        ("Appearance", "Theme", "Dark or light; applies at once",
-         seg_row("theme", ["Dark", "Light"], None, lambda v: app.set_pref("theme", v))),
+        ("Appearance", "Theme", "System follows your desktop; applies at once (Ctrl+Shift+T)",
+         seg_row("theme", th.THEMES, None, lambda v: app.set_pref("theme", v))),
+        ("Appearance", "Language", "Interface language; text from recordings is never changed",
+         seg_row("lang", ["system"] + i18n.LANGS, ["System"] + i18n.LANG_NAMES, lambda v: app.set_pref("lang", v))),
         ("Appearance", "Text size", "Everything in the window; Ctrl+ Ctrl– Ctrl+0 too",
          seg_row("size", [1.0, 1.1, 1.25, 1.5], ["100%", "110%", "125%", "150%"], lambda v: app.set_pref("text_size", v))),
         ("Appearance", "Reduce motion", "Move the timeline at once instead of gliding; dialogs still fade",
@@ -200,15 +237,19 @@ def settings(app):
     vp = imgui.get_main_viewport()
     w = min(720 * app.prefs["text_size"], vp.work_size.x - 60)
     imgui.set_next_window_size(imgui.ImVec2(w, vp.work_size.y * 0.8), imgui.Cond_.appearing)
-    imgui.set_next_window_pos(imgui.ImVec2(vp.work_pos.x + vp.work_size.x - w / 2 - 30, vp.work_pos.y + vp.work_size.y / 2),
-                              imgui.Cond_.appearing, imgui.ImVec2(0.5, 0.5))
+    pos = app.prefs.get("dlg_pos", {}).get("settings")
+    if pos:
+        imgui.set_next_window_pos(imgui.ImVec2(*pos), imgui.Cond_.appearing)
+    else:
+        imgui.set_next_window_pos(imgui.ImVec2(vp.work_pos.x + vp.work_size.x - w / 2 - 30, vp.work_pos.y + vp.work_size.y / 2),
+                                  imgui.Cond_.appearing, imgui.ImVec2(0.5, 0.5))
     imgui.push_style_color(imgui.Col_.window_bg, C("bg"))
     imgui.push_style_color(imgui.Col_.title_bg, C("track"))
     imgui.push_style_color(imgui.Col_.title_bg_active, C("pill"))
     imgui.push_style_var(imgui.StyleVar_.window_border_size, 1.0)
     imgui.push_style_var(imgui.StyleVar_.window_rounding, 10.0)
     imgui.set_next_window_bg_alpha(anim.fade_in("Settings", True))
-    visible, app.show_settings = imgui.begin("Settings", True, imgui.WindowFlags_.no_collapse
+    visible, app.show_settings = imgui.begin(f"{T('Settings')}###Settings", True, imgui.WindowFlags_.no_collapse
                                              | imgui.WindowFlags_.no_saved_settings)
     imgui.pop_style_var(2)
     imgui.pop_style_color(3)
@@ -223,7 +264,7 @@ def settings(app):
         imgui.set_keyboard_focus_here()
         app.settings_focus = False
     imgui.set_next_item_width(-1 if not app.settings_query else imgui.get_content_region_avail().x - 30)
-    _, app.settings_query = imgui.input_text_with_hint("##sq", "Search settings (Ctrl+P)", app.settings_query)
+    _, app.settings_query = imgui.input_text_with_hint("##sq", T("Search settings"), app.settings_query)
     if app.settings_query and th.clear_x("sq", "Clear the search"):
         app.settings_query = ""
     q = app.settings_query.strip().lower()
@@ -252,6 +293,9 @@ def settings(app):
     imgui.dummy(imgui.ImVec2(0, 4))
     th.small("Changes are saved as you make them.")
     imgui.end_child()
+    from .shell import keep_inside, remember_pos
+    keep_inside(app, "settings")
+    remember_pos(app, "settings")
     imgui.end()
 
 
@@ -376,7 +420,7 @@ def row_view(app):
         app.seek(c, app.range_ab[0], play=True)
     imgui.same_line()
     to = app.prefs["translate_to"]
-    if th.button(f"Translate into {to}", disabled=app.job_busy or i in c.translations.get(to, {}),
+    if th.button(f"Translate into {to}", disabled=i in c.translations.get(to, {}),
                  why="Already translated" if i in c.translations.get(to, {}) else "A job is running"):
         app.translate(c, to, rows=[i])
     imgui.same_line()
@@ -519,64 +563,6 @@ def moment_editor(app):
 
 
 # ------------------------------------------------------------- job progress
-def progress(app):
-    r = _begin_modal("Progress", app.show_progress, 640 * app.prefs["text_size"])
-    if r is None:
-        app.show_progress = False
-        return
-    if not r:
-        return
-    title(app.job_label or "Background job")
-    busy = app.job_busy
-    stopped = getattr(app, "job_stopped", False)
-    th.small((f"Running for {app.job_elapsed():.0f} s. You can keep listening and taking notes meanwhile."
-              if busy else ("Stopped." if stopped else "Failed: see the log below." if app.job_exit else "Finished.")),
-             "warn" if stopped and not busy else "danger" if app.job_exit and not busy else "text_dim")
-    imgui.dummy(imgui.ImVec2(0, 4))
-    files = app.job_files
-    overall = app.job_overall()
-    overall = app.job_overall_smooth()
-    imgui.progress_bar(overall if busy or not app.job_exit else 0.0, imgui.ImVec2(-1, 0),
-                       f"Overall  ·  {overall * 100:.0f}%")
-    th.section("Conversations")
-    with th.card("prog_files", flags=imgui.ChildFlags_.auto_resize_y):
-        if not files:
-            th.small("Loading models (the first run takes 1-2 minutes)…" if busy else "Nothing to show.")
-        for k, name in enumerate(files, 1):
-            i = app.job_file[0] if app.job_file else 0
-            if k < i or (not busy and not app.job_exit):
-                frac, lab = 1.0, "done"
-            elif k == i:
-                frac, lab = app.job_file_frac(), app.job_stage_label()
-            else:
-                frac, lab = 0.0, "waiting"
-            imgui.text(app.conv_label(name))
-            imgui.progress_bar(frac, imgui.ImVec2(-1, 0), lab)
-    th.section("Log")
-    with th.card("prog_log", imgui.ImVec2(0, 140 * app.prefs["text_size"]), padding=(10, 8)):
-        for line in app.proc_log[-60:]:
-            th.small(line, "danger" if "rror" in line or "failed" in line else "text_dim")
-        if app.job_busy:
-            imgui.set_scroll_here_y(1.0)
-    if busy:
-        imgui.push_style_color(imgui.Col_.text, C("danger"))
-        if imgui.button(f"{th.ICON_STOP}  Stop"):
-            app.stop_job()
-        imgui.pop_style_color()
-        th.tip("End this job now. Finished conversations are kept; the current one stays as it was.")
-        imgui.same_line()
-    if th.button("Hide" if busy else "Close"):
-        imgui.close_current_popup()
-        app.show_progress = False
-    if not busy and app.proc_log:
-        imgui.same_line()
-        if th.button("Clear"):
-            app.proc_log = []
-            imgui.close_current_popup()
-            app.show_progress = False
-    imgui.end_popup()
-
-
 # ------------------------------------------------------------- recorder import
 def import_dialog(app):
     pi = app.pending_import

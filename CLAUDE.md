@@ -27,11 +27,15 @@ with ±10 min raw padding (byte-exact clips + manifest) → Qwen3-ASR-1.7B trans
   Never send key events to the user's display `:1`. Opt-in pytest: `JREC_UI_TEST_DISPLAY=:99`.
 
 ## UI (src/jrec/ui/)
-app.py (layout, jobs, keys, --ui-script steps), timeline.py, transcript.py, dialogs.py, player.py (ffplay child:
+app.py (layout, keys, --ui-script steps), shell.py (command registry = keymap, palette, utility cluster,
+Tasks and logs panel, Help), tasks.py (task queue, one job at a time, tasks.json), helptext.py (Help in 4
+languages), timeline.py, transcript.py, dialogs.py, player.py (ffplay child:
 speed/sound/channel), flags.py (drawn flags), data.py. Styling: polish-ui skill via theme.py tokens.
 Script steps for screenshots: open:N wait:S seek:T find:Q ab:A-B note:T/text row:N rowsel:N viewlang:L
-importdlg:PATH fakejob:i/n/stage/d/t progress settings settingsq:Q tab:conv|people|rec|moments
-person:NAME speaker:ROW newnote:T notetext:X righttab:insights|summary theme:Dark|Light size:1.5 shot:PATH.
+importdlg:PATH fakejob:i/n/stage/d/t tasks[:logs] palette:Q help:concepts|glossary|shortcuts lang:zh-CN settings settingsq:Q tab:conv|people|rec|moments
+person:NAME speaker:ROW newnote:T notetext:X righttab:insights|summary theme:System|Light|Dark|Tokyo Night size:1.5 shot:PATH.
+Every UI string goes through i18n.T("English") (en, zh-CN, ja, ko tables in src/jrec/i18n.py); new commands go
+into shell.COMMANDS so the palette, tooltips and Help › Shortcuts pick them up.
 Use a hard-linked copy of ~/jrec-demo/lib for screenshots that write notes/translations.
 
 ## Open items (2026-10-02)

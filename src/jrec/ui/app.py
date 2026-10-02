@@ -20,6 +20,11 @@ from imgui_bundle import hello_imgui, imgui
 
 from .. import db, ingest, search
 from .. import theme as th
+from .. import i18n
+from .. import paths
+from . import shell
+from .tasks import TaskQueue
+from ..i18n import T
 from ..theme import C, U
 from ..timeref import parse as parse_goto
 from . import anim, dialogs, insights, timeline, transcript, window
@@ -42,8 +47,6 @@ Time:  time:14:00-15:30   date:2025-10-03   after:2025-10-01   before:…
 Case, full/half width and Traditional/Simplified Chinese are ignored."""
 TRANSLATE_LANGS = ["English", "Chinese", "Cantonese", "Malay", "Indonesian", "Thai", "Vietnamese", "Japanese",
                    "Korean", "Tamil", "Hindi", "Filipino"]
-STAGE_WEIGHT = {"asr": (0.0, 0.8), "align": (0.8, 0.1), "speakers": (0.9, 0.1), "summary": (0.0, 1.0),
-                "translate": (0.0, 1.0)}
 
 
 def fmt_clock(dt):
@@ -57,6 +60,8 @@ class App:
         self.con = db.connect(cfg.db_path)
         search.ensure(self.con)
         self.prefs = th.load_prefs()
+        i18n.set_lang(self.prefs.get("lang"))
+        dialogs.PREFS = self.prefs
         self.player = Player()
         self.player.speed = float(self.prefs["speed"])
         self.player.sound = self.prefs["sound"]
@@ -89,10 +94,19 @@ class App:
         # recorder import
         self.recorders_seen, self.pending_import = set(), None
         self.import_msg, self.importing = "", False
-        # background job
-        self.proc, self.proc_log = None, []
-        self.job_label, self.job_t0, self.job_exit = "", 0.0, None
-        self.job_file, self.job_step, self.job_files = None, None, []
+        # background jobs: the task queue, and the app log (Tasks and logs, Ctrl+J)
+        self.logs, self.log_unseen = [], None
+        self.log_levels, self.log_query = {"error", "warning", "info"}, ""
+        self.log_dir = paths.cache_dir()
+        self.show_tasks, self.tasks_tab, self.tasks_tab_set, self.tasks_anchor = False, "tasks", None, None
+        self.failed_seen = False
+        self.show_help, self.help_tab, self.help_tab_set, self.help_q, self.help_focus = False, "concepts", None, "", False
+        self.palette_open, self.palette_q, self.palette_sel, self.palette_focus = False, "", 0, False
+        self.palette_cache, self.palette_scroll, self.palette_age = None, False, 0
+        self.recent_cmds = list(self.prefs.get("recent_cmds", []))
+        self.show_sidebar = True
+        self.tasks = TaskQueue(cfg, self.cfg_path, on_finish=lambda t: setattr(self, "need_reload", True),
+                               on_log=self.log)
         self.need_reload, self.flash = False, ""
         self.script = [s.strip() for s in script.split(",")] if script else []
         self.script_wait, self.quit, self.shot_path = 0.0, False, None
@@ -261,71 +275,94 @@ class App:
         th.save_prefs(self.prefs)
         if key in ("theme", "text_size"):
             th.apply(self.prefs["theme"], self.prefs["text_size"])
+        if key == "lang":
+            i18n.set_lang(value)
+            self.use_lang_font()
+
+    def use_lang_font(self):
+        """CJK glyph shapes differ per language: Japanese, Korean and Chinese faces of Noto CJK."""
+        f = FONTS.get(i18n.lang())
+        if f is not None:
+            imgui.get_io().font_default = f
+
+    def cycle_lang(self):
+        codes = i18n.LANGS
+        k = codes.index(i18n.lang()) if i18n.lang() in codes else 0
+        self.set_pref("lang", codes[(k + 1) % len(codes)])
+
+    def text_step(self, d):
+        sizes = [0.9, 1.0, 1.1, 1.25, 1.5]
+        cur = min(range(len(sizes)), key=lambda i: abs(sizes[i] - self.prefs["text_size"]))
+        self.set_pref("text_size", sizes[max(0, min(len(sizes) - 1, cur + d))])
+
+    def open_palette(self):
+        if self.palette_open:
+            self.palette_open = False
+            return
+        self.palette_open, self.palette_focus, self.palette_q = True, True, ""
+        self.palette_sel, self.palette_cache, self.palette_age = 0, None, 0
+
+    def toggle_tasks(self, tab=None):
+        self.show_tasks = not self.show_tasks if tab is None else True
+        self.tasks_tab_set = tab
+
+    def open_help(self, tab="concepts", q=""):
+        self.show_help, self.help_tab_set, self.help_q, self.help_focus = True, tab, q, not q
+
+    def open_settings(self, q=""):
+        self.show_settings = self.settings_focus = True
+        self.settings_query = q
+
+    def analyze(self, c):
+        eng = self.cfg.analysis.get("engine", "rules")
+        self.start_job(["analyze", str(c.folder), "--engine", eng], f"Analysing {c.speech_start:%H:%M}", [c.name])
+
+    def verify(self, c):
+        from ..cutter import verify_folder
+        c.verified = verify_folder(c.folder, self.cfg.archive)
+        self.log("info" if c.verified and all(v for v in (c.verified.values() if isinstance(c.verified, dict) else [c.verified]))
+                 else "warning", f"Verify clips: {c.name}")
+
+    def goto_row(self, c, i, t, q=""):
+        self.find = q
+        self.select(c, t)
+        self.sel_row = (c.name, i)
+        self.update_matches()
+
+    def cycle_theme(self):
+        k = th.THEMES.index(self.prefs["theme"]) if self.prefs["theme"] in th.THEMES else 0
+        self.set_pref("theme", th.THEMES[(k + 1) % len(th.THEMES)])
 
     def apply_theme(self):
         th.apply(self.prefs["theme"], self.prefs["text_size"])
 
-    # ------------------------------------------------------------ background jobs
+    # ------------------------------------------------------------ background jobs (task queue)
     def start_job(self, args, label, files=None):
-        """Run a jrec subcommand in a child process (GPU work never runs in the UI process)."""
-        if self.job_busy:
-            return
-        cmd = [sys.executable, "-m", "jrec.cli"] + (["--config", str(self.cfg_path)] if self.cfg_path else []) + args
-        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                     stdin=subprocess.DEVNULL, close_fds=True, cwd=str(Path.home()),
-                                     start_new_session=True)   # own process group: Stop ends it and its children
-        self.job_label, self.job_t0, self.job_exit = label, time.monotonic(), None
-        self.job_stopped = False
-        self.proc_log = [f"$ jrec {shlex.join(args)}"]
-        self.job_file, self.job_step, self.job_files = None, None, list(files or [])
-        threading.Thread(target=self._pump_log, daemon=True).start()
+        """Queue a jrec subcommand; it runs as a child process when its turn comes (GPU work never
+        runs in the UI process, and only one job runs at a time)."""
+        self.tasks.add(args, label, files)
 
     def start_processing(self):
         todo = [r["folder"] for r in self.con.execute(
             "SELECT folder FROM conversation WHERE status='cut' ORDER BY speech_start DESC")]
         self.start_job(["process"], "Transcribing new conversations", todo)
 
-    def stop_job(self):
-        """End the running job and everything it started. Finished conversations stay done;
-        the one in progress keeps its previous state (nothing half-written is kept)."""
-        if not self.job_busy:
-            return
-        import signal
-        self.job_stopped = True
-        try:
-            os.killpg(self.proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        def reap():
-            try:
-                self.proc.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(self.proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-        threading.Thread(target=reap, daemon=True).start()
+    def queued_for(self, args):
+        """The waiting or running task for exactly this job, if any (its button shows that state)."""
+        return next((t for t in self.tasks.tasks if t.args == list(args) and t.state in ("queued", "running")), None)
 
     @property
     def job_busy(self):
-        return self.proc is not None and self.proc.poll() is None
+        return self.tasks.running is not None
 
-    def job_elapsed(self):
-        return time.monotonic() - self.job_t0
-
-    def job_file_frac(self):
-        stage, d, t = self.job_step or ("", 0, 1)
-        a, w = STAGE_WEIGHT.get(stage, (0.0, 0.0))
-        return a + w * (d / max(1, t))
-
-    def job_stage_label(self):
-        stage, d, t = self.job_step or ("", 0, 1)
-        return {"asr": f"Speech to text  ·  part {d} of {t}", "align": "Word timings", "speakers": "Who spoke when",
-                "summary": f"Summarising  ·  part {d + 1} of {t}", "translate": f"Translating  ·  {d} of {t} rows"
-                }.get(stage, "Preparing")
+    def log(self, level, msg):
+        self.logs.append((datetime.now().strftime("%H:%M:%S"), level, msg))
+        self.logs = self.logs[-500:]
+        if level in ("error", "warning"):
+            self.log_unseen = level if level == "error" or self.log_unseen != "error" else self.log_unseen
 
     def job_overall_smooth(self):
-        return self.progress_glide(self.job_overall())
+        return self.progress_glide(self.tasks.overall()[0])
 
     def animate_view(self, target):
         """Move the timeline view to `target` (ease-out 220 ms), or at once with Reduce motion."""
@@ -345,37 +382,6 @@ class App:
                     self.view_tw = None
         busy = self.view_tw is not None or self.progress_glide.active or anim.fading()
         hello_imgui.get_runner_params().fps_idling.enable_idling = not busy   # smooth frames only while moving
-
-    def job_overall(self):
-        if not self.job_busy:
-            return 1.0 if not self.job_exit else 0.0
-        if not self.job_file or self.job_file[2] == "loading-models":
-            return 0.0
-        i, n, _ = self.job_file
-        return ((i - 1) + self.job_file_frac()) / max(1, n)
-
-    def _pump_log(self):
-        for line in self.proc.stdout:
-            if line.startswith("PROGRESS "):
-                f = line.split()
-                if f[1] == "file":
-                    self.job_file, self.job_step = (int(f[2]), int(f[3]), " ".join(f[4:])), None
-                    name = " ".join(f[4:])
-                    if name != "loading-models" and name not in self.job_files:
-                        self.job_files.append(name)
-                elif f[1] == "step":
-                    self.job_step = (f[2], int(f[3]), int(f[4]))
-                continue
-            low = line.lower()
-            if "warn" not in low and "it/s]" not in low and "loading" not in low:
-                self.proc_log.append(line.rstrip())
-                self.proc_log = self.proc_log[-300:]
-        self.job_exit = self.proc.wait()
-        if getattr(self, "job_stopped", False):
-            self.proc_log.append("stopped by you; finished conversations are kept, the current one is unchanged")
-        elif self.job_exit:
-            self.proc_log.append(f"failed (exit {self.job_exit}); see the lines above")
-        self.need_reload = True  # the SQLite connection belongs to the UI thread: reload there
 
     # ------------------------------------------------------------ recorder import
     def _watch_recorders(self):
@@ -420,6 +426,7 @@ class App:
             self.need_reload = False
             self.reload()
         self._run_script()
+        self.tasks.pump()
         self.global_keys()
         vp = imgui.get_main_viewport()
         imgui.set_next_window_pos(vp.work_pos)
@@ -429,13 +436,17 @@ class App:
         self.topbar()
         ts = self.prefs["text_size"]
         side_w = max(220.0, min(vp.work_size.x * 0.45, self.prefs.get("side_w", 310.0) * ts))
-        with th.card("side", imgui.ImVec2(side_w, 0), padding=(10, 10)):
-            self.sidebar()
-        imgui.same_line(0, 0)
-        d = self.vsplit("split_side")
-        if d:
-            self.prefs["side_w"] = max(220.0, (side_w + d) / ts)
-        imgui.same_line(0, 0)
+        if self.show_sidebar:
+            with th.card("side", imgui.ImVec2(side_w, 0), padding=(10, 10)):
+                self.sidebar()
+            imgui.same_line(0, 0)
+            d = self.vsplit("split_side")
+            if d:
+                self.prefs["side_w"] = max(220.0, (side_w + d) / ts)
+            if d is None:                      # double-click: default width
+                self.prefs["side_w"] = 310.0
+                th.save_prefs(self.prefs)
+            imgui.same_line(0, 0)
         imgui.push_style_color(imgui.Col_.child_bg, C("bg", 0.0))
         imgui.push_style_var(imgui.StyleVar_.child_border_size, 0)
         imgui.begin_child("main_area", imgui.ImVec2(0, 0))
@@ -445,16 +456,18 @@ class App:
             self.conversation(self.sel)
         else:
             imgui.dummy(imgui.ImVec2(0, 40))
-            imgui.text_colored(C("text_dim"), "Pick a conversation on the left, or plug in the recorder.")
+            imgui.text_colored(C("text_dim"), T("Pick a conversation on the left, or plug in the recorder."))
         imgui.end_child()
         dialogs.import_dialog(self)
-        dialogs.progress(self)
         dialogs.row_view(self)
         dialogs.note_editor(self)
         dialogs.speaker_editor(self)
         dialogs.moment_editor(self)
         imgui.end()
-        dialogs.settings(self)   # its own window, drawn last: floats above the main window
+        shell.tasks_window(self)
+        shell.help_window(self)
+        dialogs.settings(self)   # its own windows, drawn last: float above the main window
+        shell.palette(self)
         if self.quit:
             hello_imgui.get_runner_params().app_shall_exit = True
 
@@ -472,6 +485,8 @@ class App:
             delta = imgui.get_io().mouse_delta.x
         if imgui.is_item_deactivated():
             th.save_prefs(self.prefs)
+        if imgui.is_item_hovered() and imgui.is_mouse_double_clicked(0):
+            return None
         return delta
 
     # ------------------------------------------------------------ title bar (borderless window)
@@ -495,72 +510,54 @@ class App:
         dl.add_text(imgui.ImVec2(p.x + 4, p.y + (h - imgui.get_font_size()) / 2), U("text"), "jev-recorder")
         lib = str(self.cfg.library).replace(str(Path.home()), "~", 1)
         x_lib = p.x + 14 + imgui.calc_text_size("jev-recorder").x
-        right_limit = p.x + (w - min(460.0, w * 0.36)) / 2 - 12 if self.proc_log else p.x + w - 200
+        right_limit = p.x + w - 340
         dl.push_clip_rect(imgui.ImVec2(x_lib, p.y), imgui.ImVec2(right_limit, p.y + h), True)
         dl.add_text(imgui.get_font(), imgui.get_font_size() * 0.86,
                     imgui.ImVec2(x_lib, p.y + (h - imgui.get_font_size()) / 2 + 2), U("text_dim"), lib)
         dl.pop_clip_rect()
-        # task queue chip in the middle
-        if self.proc_log:
-            cw = min(460.0, w * 0.36)
-            imgui.set_cursor_screen_pos(imgui.ImVec2(p.x + (w - cw) / 2, p.y + 4))
-            self.job_indicator(cw, h - 8)
-        # right: settings, minimize, maximize/restore, close
+        # right: utility cluster (search · tasks and logs · help · settings) | window buttons
         bw = h - 8
-        icons = [(th.ICON_GEAR, "Settings (Ctrl+,  ·  search: Ctrl+P)", lambda: setattr(self, "show_settings", True), None)]
+        wins = []
         if window.available():
-            icons += [(th.ICON_MIN, "Minimize", window.minimize, None),
-                      (th.ICON_RESTORE if window.maximized() else th.ICON_MAX, "Maximize / restore", window.toggle_maximize, None),
-                      (th.ICON_X, "Close", window.close, "danger")]
-        x = p.x + w - len(icons) * (bw + 4)
-        for k, (icon, tip_, fn, hover_col) in enumerate(icons):
-            imgui.set_cursor_screen_pos(imgui.ImVec2(x + k * (bw + 4), p.y + 4))
+            wins = [(th.ICON_MIN, "Minimize", window.minimize, None),
+                    (th.ICON_RESTORE if window.maximized() else th.ICON_MAX, "Maximize / restore", window.toggle_maximize, None),
+                    (th.ICON_X, "Close", window.close, "danger")]
+        x_win = p.x + w - len(wins) * (bw + 4)
+        cluster_w = 4 * bw + 12
+        x_util = x_win - (14 if wins else 0) - cluster_w
+        self.tasks_anchor = (x_util + bw * 1.5 + 4, p.y + h + 6)
+        shell.utility_cluster(self, x_util, p.y + 4, bw)
+        if wins:
+            imgui.get_window_draw_list().add_line(imgui.ImVec2(x_win - 7, p.y + 8), imgui.ImVec2(x_win - 7, p.y + h - 8),
+                                                  U("divider"), 1.0)
+        for k, (icon, tip_, fn, hover_col) in enumerate(wins):
+            imgui.set_cursor_screen_pos(imgui.ImVec2(x_win + k * (bw + 4), p.y + 4))
             imgui.push_style_color(imgui.Col_.button, C("bg", 0.0))
-            if hover_col:
-                imgui.push_style_color(imgui.Col_.button_hovered, C(hover_col, 0.85))
+            imgui.push_style_color(imgui.Col_.text, C("text_dim"))
+            imgui.push_style_color(imgui.Col_.button_hovered, C(hover_col, 0.85) if hover_col else C("track"))
             if imgui.button(f"{icon}##tb{k}", imgui.ImVec2(bw, bw)):
                 fn()
-            imgui.pop_style_color(2 if hover_col else 1)
+            imgui.pop_style_color(3)
             th.tip(tip_)
         imgui.set_cursor_screen_pos(imgui.ImVec2(p.x, p.y + h + 2))
 
     def global_keys(self):
+        if shell.dispatch_keys(self):
+            return
         io = imgui.get_io()
         K = imgui.Key
         ctrl = io.key_ctrl or io.key_super
-        if ctrl and imgui.is_key_pressed(K.comma, False):
-            self.show_settings = self.settings_focus = True
-        elif ctrl and imgui.is_key_pressed(K.p, False):          # settings search, matches highlighted
-            self.show_settings = self.settings_focus = True
-            self.settings_palette = True
-        sizes = [0.9, 1.0, 1.1, 1.25, 1.5]
-        cur = min(range(len(sizes)), key=lambda i: abs(sizes[i] - self.prefs["text_size"]))
-        if ctrl and (imgui.is_key_pressed(K.equal, False) or imgui.is_key_pressed(K.keypad_add, False)):
-            self.set_pref("text_size", sizes[min(len(sizes) - 1, cur + 1)])
-        elif ctrl and (imgui.is_key_pressed(K.minus, False) or imgui.is_key_pressed(K.keypad_subtract, False)):
-            self.set_pref("text_size", sizes[max(0, cur - 1)])
-        elif ctrl and imgui.is_key_pressed(K._0, False):
-            self.set_pref("text_size", 1.0)
-        elif ctrl and imgui.is_key_pressed(K.f, False):
-            self.focus_find = True
-        elif ctrl and imgui.is_key_pressed(K.g, False):
-            self.focus_goto = True
+        if ctrl and io.key_shift and imgui.is_key_pressed(K.p, False):       # alias of Ctrl+P
+            self.open_palette()
+        elif ctrl and imgui.is_key_pressed(K.keypad_add, False):
+            self.text_step(1)
+        elif ctrl and imgui.is_key_pressed(K.keypad_subtract, False):
+            self.text_step(-1)
         c = self.sel
-        if c is None or io.want_text_input or ctrl or imgui.is_popup_open("", imgui.PopupFlags_.any_popup_id):
+        if c is None or io.want_text_input or ctrl or self.palette_open or \
+                imgui.is_popup_open("", imgui.PopupFlags_.any_popup_id):
             return
-        if imgui.is_key_pressed(K.space, False):
-            self.toggle_play(c)
-        elif imgui.is_key_pressed(K.n, False):
-            self.jump_speech(c, 1)
-        elif imgui.is_key_pressed(K.p, False):
-            self.jump_speech(c, -1)
-        elif imgui.is_key_pressed(K.m, False):
-            self.new_note(c, self.here(c))
-        elif imgui.is_key_pressed(K.left_bracket, False):
-            self.set_a(self.here(c))
-        elif imgui.is_key_pressed(K.right_bracket, False):
-            self.set_b(self.here(c))
-        elif imgui.is_key_pressed(K.l, False):
+        if imgui.is_key_pressed(K.l, False):
             self.loop = not self.loop and self.range_ab is not None
         elif imgui.is_key_pressed(K.escape, False):
             self.range_ab, self.loop = None, False
@@ -597,10 +594,6 @@ class App:
         imgui.pop_style_color()
         if imgui.is_item_hovered():
             imgui.set_tooltip(SEARCH_HELP)
-        n_new = sum(c.status == "cut" for c in self.convs)
-        if th.button(f"Transcribe new ({n_new})" if n_new else "Transcribe new", disabled=self.job_busy or not n_new,
-                     why="A job is already running" if self.job_busy else "Everything is transcribed"):
-            self.start_processing()
         imgui.dummy(imgui.ImVec2(0, 2))
         avail_w = imgui.get_content_region_avail().x
         names = ["Talks", "People", "Files", "Moments", "Tags"]
@@ -613,6 +606,14 @@ class App:
                                    "Your notes and saved A–B stretches",
                                    "Create, rename, merge and delete tags; see where each is used"],
                                   fill=avail_w)
+        imgui.dummy(imgui.ImVec2(0, 2))
+        n_new = sum(c.status == "cut" for c in self.convs)
+        queued = self.queued_for(["process"])
+        label = (T("Transcribing…") if queued and queued.state == "running" else T("Waiting") if queued
+                 else T("Transcribe new ({n})", n=n_new) if n_new else T("Transcribe new"))
+        if th.feature_button("trnew", th.ICON_WAND, label, disabled=not n_new or queued is not None,
+                             why=T("Everything is transcribed") if not n_new else T("Already in the task queue")):
+            self.start_processing()
         imgui.dummy(imgui.ImVec2(0, 2))
         imgui.begin_child("list", imgui.ImVec2(0, 0), 0)
         if self.hits is not None:
@@ -899,44 +900,6 @@ class App:
                             c.moments = db.moments(self.con, c.name)
                     imgui.end_popup()
 
-    def job_indicator(self, w=None, h=None):
-        busy = self.job_busy
-        p = imgui.get_cursor_screen_pos()
-        w = w or imgui.get_content_region_avail().x
-        h = h or imgui.get_font_size() * 2.6
-        if imgui.invisible_button("job_ind", imgui.ImVec2(w - (34 if busy else 0), h)):
-            self.show_progress = True
-        th.tip("Show progress")
-        if busy:
-            imgui.same_line(0, 4)
-            imgui.push_style_color(imgui.Col_.button, C("danger", 0.18))
-            imgui.push_style_color(imgui.Col_.text, C("danger"))
-            if imgui.button(f"{th.ICON_STOP}##stopjob", imgui.ImVec2(30, h)):
-                self.stop_job()
-            imgui.pop_style_color(2)
-            th.tip("Stop this job")
-        dl = imgui.get_window_draw_list()
-        dl.add_rect_filled(p, imgui.ImVec2(p.x + w, p.y + h), U("track"), 8.0)
-        if busy:
-            spin = "◐◓◑◒"[int(time.monotonic() * 4) % 4]
-            label = f"{spin}  {self.job_label}"
-            col = U("text")
-        elif getattr(self, "job_stopped", False):
-            label, col = f"{self.job_label}: stopped", U("warn")
-        elif self.job_exit:
-            label, col = f"✕  {self.job_label}: failed", U("danger")
-        else:
-            label, col = f"✓  {self.job_label}: done", U("ok")
-        dl.push_clip_rect(p, imgui.ImVec2(p.x + w - 6, p.y + h), True)
-        dl.add_text(imgui.ImVec2(p.x + 10, p.y + 3), col, label)
-        dl.pop_clip_rect()
-        frac = self.job_overall_smooth()
-        by = p.y + h - 7
-        dl.add_rect_filled(imgui.ImVec2(p.x + 10, by), imgui.ImVec2(p.x + w - 10, by + 4), U("pill_border"), 2.0)
-        dl.add_rect_filled(imgui.ImVec2(p.x + 10, by), imgui.ImVec2(p.x + 10 + (w - 20) * frac, by + 4),
-                           U("danger" if self.job_exit else "accent"), 2.0)
-        imgui.dummy(imgui.ImVec2(0, 2))
-
     def list_row(self, id_, title, sub, selected):
         """Two-line list row: title in text colour, details in grey; accent wash when selected."""
         fs = imgui.get_font_size()
@@ -993,7 +956,10 @@ class App:
         if side:
             imgui.same_line(0, 0)
             d = self.vsplit("split_right")
-            if d:
+            if d is None:
+                self.prefs["right_w"] = 0.34
+                th.save_prefs(self.prefs)
+            elif d:
                 self.prefs["right_w"] = max(0.15, min(0.7, (sum_w - d) / max(1.0, avail.x)))
             imgui.same_line(0, 0)
             self.right_column(c)
@@ -1090,7 +1056,7 @@ class App:
         imgui.pop_style_color()
         imgui.same_line(0, 4)
         to = self.prefs["translate_to"]
-        if th.button("Translate", disabled=self.job_busy or i in c.translations.get(to, {}),
+        if th.button("Translate", disabled=i in c.translations.get(to, {}),
                      why="Already translated" if i in c.translations.get(to, {}) else "A job is running"):
             self.translate(c, to, rows=[i])
         imgui.same_line(0, 4)
@@ -1147,8 +1113,8 @@ class App:
             imgui.end_popup()
 
     def actions(self, c):
-        busy = self.job_busy
-        why = "Another job is running; see the indicator on the left"
+        busy = False                     # jobs queue up: buttons stay usable while another one runs
+        why = ""
         if c.status == "cut":
             if th.primary_button("Transcribe", disabled=busy, why=why):
                 self.start_job(["transcribe", str(c.folder)], f"Transcribing {c.speech_start:%H:%M}", [c.name])
@@ -1489,15 +1455,32 @@ class App:
             cands = [x for x in ingest.scan(d, Path(arg), "script", db.connect(self.cfg.db_path)) if x.status == "new"]
             self.pending_import = {"device": d, "mount": Path(arg), "serial": "script", "cands": cands,
                                    "checked": [True] * len(cands), "open": True}
-        elif cmd == "fakejob":  # job bar + progress window in a given state (UI tests only)
+        elif cmd == "fakejob":  # a task queue in a given state (UI tests only; nothing is saved)
+            from .tasks import Task
             i, n, stage, d, t = arg.split("/")
-            self.proc = subprocess.Popen(["sleep", "30"])
-            self.job_label, self.job_t0 = "Transcribing new conversations", time.monotonic() - 42
-            self.job_files = [x.name for x in self.convs][: int(n)]
-            self.proc_log = [f"[{i}/{n}] {self.job_files[int(i) - 1]}"]
-            self.job_file, self.job_step = (int(i), int(n), self.job_files[int(i) - 1]), (stage, int(d), int(t))
-        elif cmd == "progress":
-            self.show_progress = True
+            q = self.tasks
+            q.path = Path(os.devnull)
+            files = [x.name for x in self.convs][: int(n)]
+            run = Task(["process"], "Transcribing new conversations", files, "running")
+            run.proc = subprocess.Popen(["sleep", "30"])
+            run.t0 = time.monotonic() - 42
+            run.log = [f"[{i}/{n}] {files[int(i) - 1]}"]
+            run.file, run.step = (int(i), int(n), files[int(i) - 1]), (stage, int(d), int(t))
+            c0 = self.convs[0]
+            q.tasks = [run, Task(["summarize", str(c0.folder)], f"Summarising {c0.speech_start:%H:%M}", [c0.name]),
+                       Task(["analyze", str(c0.folder)], f"Analysing {c0.speech_start:%H:%M}", [c0.name], "failed")]
+            q.tasks[-1].error = "LLM server not reachable at http://localhost:8888/v1"
+            self.log("info", "Started: Transcribing new conversations")
+            self.log("error", "Failed: Analysing (LLM server not reachable)")
+        elif cmd in ("progress", "tasks"):
+            self.toggle_tasks(arg or "tasks")
+        elif cmd == "palette":
+            self.open_palette()
+            self.palette_q, self.palette_cache = arg, None
+        elif cmd == "help":
+            self.open_help(arg or "concepts")
+        elif cmd == "lang":
+            self.set_pref("lang", arg) if False else (i18n.set_lang(arg), self.use_lang_font())
         elif cmd == "theme":
             self.prefs["theme"] = arg
             th.apply(arg, self.prefs["text_size"])
@@ -1542,18 +1525,38 @@ class App:
             self.quit = True
 
 
+CJK_FACE = {"ja": 0, "ko": 1, "zh-CN": 2, "en": 2}
+FONTS = {}           # locale -> ImFont, loaded once; the active one is pushed every frame
+
+
+def _font_params(merge=False, face=0, icons=False):
+    fp = hello_imgui.FontLoadingParams(merge_to_last_font=merge)
+    fc = fp.font_config
+    fc.font_no = face
+    fc.oversample_h, fc.oversample_v = 3, 2      # smoother anti-aliased edges and sub-pixel placement
+    fc.pixel_snap_h = icons                      # icons stay crisp on whole pixels
+    return fp
+
+
 def _load_fonts():
     path = next((p for p in FONT_CANDIDATES if Path(p).exists()), None)
-    if path:
-        hello_imgui.load_font(path, 15.0)
-        thai = next((p for p in THAI_FONTS if Path(p).exists()), None)
-        if thai:
-            hello_imgui.load_font(thai, 15.0, hello_imgui.FontLoadingParams(merge_to_last_font=True))
-        # Font Awesome 6 (ships with imgui-bundle) for small icons: note, open, clear
-        fa = hello_imgui.FontLoadingParams(merge_to_last_font=True)
-        hello_imgui.load_font("fonts/Font_Awesome_6_Free-Solid-900.otf", 13.0, fa)
-    else:
+    if not path:
         hello_imgui.imgui_default_settings.load_default_font_with_font_awesome_icons()
+        return
+    thai = next((p for p in THAI_FONTS if Path(p).exists()), None)
+    faces = {lang: (CJK_FACE[lang] if path.endswith(".ttc") else 0) for lang in CJK_FACE}
+    loaded = {}
+    for lang, face in faces.items():
+        if face in loaded:
+            FONTS[lang] = loaded[face]
+            continue
+        f = hello_imgui.load_font(path, 15.0, _font_params(face=face))
+        if thai:
+            hello_imgui.load_font(thai, 15.0, _font_params(merge=True))
+        # Font Awesome 6 (ships with imgui-bundle) for icons
+        hello_imgui.load_font("fonts/Font_Awesome_6_Free-Solid-900.otf", 13.0, _font_params(merge=True, icons=True))
+        FONTS[lang] = loaded[face] = f
+    imgui.get_io().font_default = FONTS.get(i18n.lang(), FONTS["en"])
 
 
 def run(cfg, script=None):
@@ -1579,8 +1582,10 @@ def run(cfg, script=None):
     params.renderer_backend_options.open_gl_options = gl
     hello_imgui.run(params)
     app.player.stop()
-    if app.proc and app.proc.poll() is None and app.proc.args[:1] == ["sleep"]:
-        app.proc.terminate()
+    for t in app.tasks.tasks:
+        if t.proc and t.proc.poll() is None and t.proc.args[:1] == ["sleep"]:
+            t.proc.terminate()
+    app.tasks.shutdown()
     if app.shot_path:
         from PIL import Image
         Image.fromarray(hello_imgui.final_app_window_screenshot()).save(app.shot_path)

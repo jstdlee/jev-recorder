@@ -17,8 +17,10 @@ jrec search 预算                                           # full-text search 
 jrec verify                                               # re-check every clip against the archive
 ```
 
-Config: `~/.config/jrec/config.toml` (defaults in `src/jrec/config.py`): library path, device
-profiles, and `[llm.profiles.*]` endpoints. Plan and decisions: [PLAN.md](PLAN.md).
+Config: `config.toml` in `~/.config/jrec` (Linux), `%APPDATA%\jrec` (Windows) or
+`~/Library/Application Support/jrec` (macOS); defaults in `src/jrec/config.py`: library path, device
+profiles, and `[llm.profiles.*]` endpoints. UI preferences sit next to it in `ui.json`; the launch log is in
+`~/.cache/jrec` / `%LOCALAPPDATA%\jrec`. Plan and decisions: [PLAN.md](PLAN.md).
 Diarization runs in `.venv-nemo` (Transformers >= 5); see `src/jrec/diarize.py`.
 
 ## Speech model (Settings > Transcription, or `[asr]` in the config)
@@ -34,6 +36,52 @@ Diarization runs in `.venv-nemo` (Transformers >= 5); see `src/jrec/diarize.py`.
 - `language = "en"` (or another ISO code): Cohere only; Qwen3-ASR is not loaded.
 - The Cohere model is gated: accept its terms on Hugging Face, then `hf auth login`.
 - One run only: `jrec transcribe --asr cohere FOLDER`. `transcript.json` records the model in `asr`.
+
+## The desktop app
+
+- **Top bar** (no system title bar): drag it to move the window, double-click to maximise. Top right, always in
+  this order: **Search** (Ctrl+P), **Tasks and logs** (Ctrl+J), **Help** (F1), **Settings** (Ctrl+,), then
+  minimise, maximise and close.
+- **Search** opens one palette for everything: commands (with their shortcuts), settings, help topics,
+  conversations and transcript lines. ↑ ↓ move, Tab jumps to the next group, Enter runs, Esc closes. An empty
+  search shows your recent commands.
+- **Task queue.** Transcribe, summarize, translate, analyze and the cleaned copy all go into one queue and run
+  one at a time (GPU and heat rule). The Tasks icon shows a progress ring and a count badge. The panel lists
+  each task with its progress, current step and time left:
+  - **Pause** and **Resume** (only for "Transcribe new"): finished conversations are kept.
+  - **Stop**: ends the job; finished conversations are kept and the current one stays as it was.
+  - **Cancel**, **Retry**, **Remove**, and move a waiting task up or down.
+  - **Logs** tab with Error / Warning / Info filters, search, Copy, and Open log folder.
+
+  The queue is saved in the library (`tasks.json`). After a restart, an interrupted "Transcribe new" comes back
+  paused; other interrupted jobs come back failed, ready to retry.
+- **Help** (F1) has three tabs: Concepts, Glossary, and Shortcuts. The Shortcuts tab is generated from the same
+  command list the palette uses.
+- **Themes:** System (follows the desktop), Light, Dark and Tokyo Night; Ctrl+Shift+T cycles through them.
+- **Languages:** English, 简体中文, 日本語 and 한국어. A switch applies at once, CJK glyphs included. Text from
+  recordings is never translated by this setting.
+- Text is drawn oversampled and anti-aliased; Ctrl+= / Ctrl+- / Ctrl+0 change the text size.
+- **Dialogs** move by dragging any empty spot, remember where you left them, and stay inside the window.
+  Double-click an empty spot to centre a dialog again. Every border between panes drags, and a double-click
+  resets it. Ctrl+B hides the sidebar.
+
+| Keys | Action |
+|---|---|
+| Ctrl+P / Ctrl+K | Search and commands |
+| Ctrl+J | Tasks and logs |
+| F1 / Ctrl+/ | Help / Keyboard shortcuts |
+| Ctrl+, | Settings |
+| Ctrl+Shift+T | Switch theme |
+| Ctrl+B | Show or hide the sidebar |
+| Ctrl+F / Ctrl+G | Find in this conversation / Go to a time |
+| Space, N, P | Play/pause, next/previous speech |
+| [ ] L | Set A, set B, repeat A–B |
+| M | Add a note here |
+| ← → (Shift 1 s, Alt 30 s) | Back/forward 5 s |
+| Ctrl+Q | Quit |
+
+Platforms: Linux x86_64 and arm64 (GB10) and Windows x64. CI runs the core tests on all three. GPU
+transcription needs CUDA; the rest (archive, cutting, search, notes, the UI) runs anywhere.
 
 ## Search syntax (sidebar search and "Find in this conversation")
 

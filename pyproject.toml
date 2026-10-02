@@ -15,7 +15,7 @@ spike = [
   "qwen-asr", "pandas", "tqdm", "librosa", "opencc-python-reimplemented",
 ]
 dev = ["pytest"]
-ui = ["imgui-bundle>=1.92", "numpy", "pillow"]
+ui = ["imgui-bundle>=1.92", "numpy", "pillow", "glfw"]
 
 [build-system]
 requires = ["hatchling"]

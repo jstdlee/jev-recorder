@@ -1,0 +1,30 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
+      - name: Install
+        run: uv venv && uv pip install -e ".[dev,ui]" opencc-python-reimplemented
+      - name: Core tests (the UI smoke test needs a display and is skipped)
+        run: uv run --no-sync pytest -q
+      - name: UI imports
+        run: uv run --no-sync python -c "import jrec.ui.shell, jrec.ui.tasks, jrec.i18n, jrec.paths; print('ok')"

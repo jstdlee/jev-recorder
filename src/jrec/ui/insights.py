@@ -72,8 +72,8 @@ def speaker_label(c, spk):
 def draw(app, c):
     ins = c.insight
     eng = app.cfg.analysis.get("engine", "rules")
-    if th.primary_button("Analyze" if not ins else "Analyze again", disabled=app.job_busy,
-                         why="Another job is running"):
+    if th.primary_button("Analyze" if not ins else "Analyze again", disabled=app.queued_for(["analyze", str(c.folder), "--engine", eng]) is not None,
+                         why="Already in the task queue"):
         app.start_job(["analyze", str(c.folder), "--engine", eng], f"Analysing {c.speech_start:%H:%M}", [c.name])
     imgui.same_line()
     ch, v = th.seg("engine", eng, ENGINES, ENGINE_LABELS, ENGINE_TIPS)
