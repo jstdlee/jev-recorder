@@ -100,18 +100,38 @@ class Conversation:
     def abs_at(self, t):
         return self.start + timedelta(seconds=t)
 
+    def speech_spans(self):
+        """Transcript segments when available, else VAD regions (clip seconds), merged across < 1 s gaps."""
+        raw = [(s["_t0"], s["_t1"]) for s in self.segments] or [tuple(r) for r in self.manifest["vad"]["regions_sec"]]
+        out = []
+        for a, b in sorted(raw):
+            if out and a - out[-1][1] < 1.0:
+                out[-1] = (out[-1][0], max(out[-1][1], b))
+            else:
+                out.append((a, b))
+        return out
+
+    def next_speech(self, t, direction=1):
+        spans = self.speech_spans()
+        if direction > 0:
+            return next((a for a, _ in spans if a > t + 0.5), None)
+        return next((a for a, _ in reversed(spans) if a < t - 1.0), None)
+
 
 class Player:
     """ffplay in a child process; playhead = start offset + elapsed wall time."""
     def __init__(self):
         self.proc, self.t0, self.wall0, self.conv = None, 0.0, 0.0, None
+        self.speed = 1.0
 
-    def play(self, conv, t):
+    def play(self, conv, t, speed=None):
         self.stop()
+        self.speed = speed or self.speed
         listen = conv.folder / "listen.opus"
         src, off = (listen, t) if listen.exists() else self._raw_at(conv, t)
+        af = ["-af", f"atempo={self.speed}"] if self.speed != 1.0 else []  # pitch-preserving speed
         self.proc = subprocess.Popen(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", "-ss", f"{off:.2f}",
-                                      str(src)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                      *af, str(src)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL, close_fds=True)
         self.t0, self.wall0, self.conv = t, time.monotonic(), conv
 
@@ -136,7 +156,7 @@ class Player:
         return self.proc is not None and self.proc.poll() is None
 
     def position(self):
-        return self.t0 + (time.monotonic() - self.wall0) if self.playing else None
+        return self.t0 + (time.monotonic() - self.wall0) * self.speed if self.playing else None
 
 
 # ---------------------------------------------------------------- app
@@ -159,6 +179,8 @@ class App:
         # background processing
         self.proc, self.proc_log = None, []
         self.job_label, self.job_t0 = "", 0.0
+        self.job_file, self.job_step = None, None   # (i, n, name), (stage, done, total)
+        self.skip_silence = True
         self.cfg_path = os.environ.get("JREC_CONFIG_PATH")
         self.script = [s.strip() for s in script.split(",")] if script else []
         self.script_wait = 0
@@ -240,6 +262,7 @@ class App:
                                      stdin=subprocess.DEVNULL, close_fds=True, cwd=str(Path.home()))
         self.job_label, self.job_t0 = label, time.monotonic()
         self.proc_log = [f"$ jrec {shlex.join(args)}"]
+        self.job_file, self.job_step = None, None
         threading.Thread(target=self._pump_log, daemon=True).start()
 
     def start_processing(self):
@@ -251,6 +274,13 @@ class App:
 
     def _pump_log(self):
         for line in self.proc.stdout:
+            if line.startswith("PROGRESS "):
+                f = line.split()
+                if f[1] == "file":
+                    self.job_file, self.job_step = (int(f[2]), int(f[3]), " ".join(f[4:])), None
+                elif f[1] == "step":
+                    self.job_step = (f[2], int(f[3]), int(f[4]))
+                continue
             low = line.lower()
             if "warn" not in low and "it/s]" not in low and "loading" not in low:
                 self.proc_log.append(line.rstrip())
@@ -341,6 +371,19 @@ class App:
                                    else f"{self.job_label}: done"))
         imgui.same_line()
         imgui.text_disabled(last[-140:])
+        if busy and self.job_file:
+            i, n, name = self.job_file
+            stage, d, t = self.job_step or ("", 0, 1)
+            weight = {"asr": (0.0, 0.8), "align": (0.8, 0.1), "speakers": (0.9, 0.1)}.get(stage, (0.0, 0.0))
+            frac_file = weight[0] + weight[1] * (d / max(1, t))
+            if name == "loading-models":
+                imgui.progress_bar(0.0, imgui.ImVec2(-1, 0), "loading models (first run: 1-2 min)")
+            else:
+                overall = ((i - 1) + frac_file) / max(1, n)
+                imgui.progress_bar(overall, imgui.ImVec2(-1, 0), f"overall: conversation {i} of {n}  ({overall*100:.0f}%)")
+                label = {"asr": f"speech to text: chunk {d} of {t}", "align": "word timings",
+                         "speakers": "who spoke when"}.get(stage, "preparing")
+                imgui.progress_bar(frac_file, imgui.ImVec2(-1, 0), f"{name}: {label}")
         if not busy:
             imgui.same_line()
             if imgui.small_button("dismiss"):
@@ -379,8 +422,29 @@ class App:
             imgui.same_line()
             imgui.text_disabled(f"uses LLM profile '{self.cfg.llm.get('default')}' ({self.cfg.llm_profile()['base_url']})")
         playing = self.player.playing and self.player.conv is c
-        if imgui.button("Stop" if playing else "Play"):
-            self.player.stop() if playing else self.player.play(c, self.cursor)
+        if imgui.button("Pause" if playing else "Play"):
+            self.toggle_play(c)
+        imgui.same_line()
+        if imgui.button("◀ speech"):
+            self.jump_speech(c, -1)
+        imgui.same_line()
+        if imgui.button("speech ▶"):
+            self.jump_speech(c, 1)
+        imgui.same_line()
+        imgui.text_disabled("speed")
+        for sp in (1.0, 1.25, 1.5, 2.0, 3.0):
+            imgui.same_line()
+            active = abs(self.player.speed - sp) < 1e-6
+            if active:
+                imgui.push_style_color(imgui.Col_.button, imgui.ImVec4(0.20, 0.42, 0.75, 1))
+            if imgui.small_button(f"{sp:g}x"):
+                self.player.speed = sp
+                if playing:
+                    self.player.play(c, self.player.position() or self.cursor, sp)
+            if active:
+                imgui.pop_style_color()
+        imgui.same_line()
+        _, self.skip_silence = imgui.checkbox("skip silence", self.skip_silence)
         imgui.same_line()
         if imgui.button("Verify"):
             from .cutter import verify_folder
@@ -405,7 +469,42 @@ class App:
             self.summary_panel(c)
             imgui.end_child()
 
+    def toggle_play(self, c):
+        if self.player.playing and self.player.conv is c:
+            self.cursor = self.player.position() or self.cursor
+            self.player.stop()
+        else:
+            self.player.play(c, self.cursor)
+
+    def jump_speech(self, c, direction):
+        here = self.player.position() if self.player.conv is c and self.player.playing else self.cursor
+        t = c.next_speech(here, direction)
+        if t is None:
+            return
+        self.select(c, max(0.0, t - 0.3))
+        if self.player.playing:
+            self.player.play(c, self.cursor)
+
+    def keys(self, c):
+        io = imgui.get_io()
+        if io.want_text_input:
+            return
+        K = imgui.Key
+        if imgui.is_key_pressed(K.space, False):
+            self.toggle_play(c)
+        elif imgui.is_key_pressed(K.n, False):
+            self.jump_speech(c, 1)
+        elif imgui.is_key_pressed(K.p, False):
+            self.jump_speech(c, -1)
+        elif imgui.is_key_pressed(K.right_arrow) or imgui.is_key_pressed(K.left_arrow):
+            d = 5.0 if imgui.is_key_pressed(K.right_arrow) else -5.0
+            here = self.player.position() if self.player.playing and self.player.conv is c else self.cursor
+            self.cursor = max(0.0, min(c.duration, here + d))
+            if self.player.playing:
+                self.player.play(c, self.cursor)
+
     def timeline(self, c):
+        self.keys(c)
         w = imgui.get_content_region_avail().x
         h_wave, h_lanes, h_axis = 110, 34, 22
         h = h_wave + h_lanes + h_axis
@@ -464,6 +563,13 @@ class App:
         pos = self.player.position() if self.player.conv is c else None
         if pos is not None and pos > c.duration:
             self.player.stop(); pos = None
+        if pos is not None and self.skip_silence:
+            spans = c.speech_spans()
+            inside = any(a - 0.5 <= pos <= b + 1.5 for a, b in spans)
+            nxt = c.next_speech(pos, 1)
+            if not inside and nxt is not None and nxt - pos > 3.0:
+                self.player.play(c, nxt - 0.3)   # jump over the silent stretch
+                pos = nxt - 0.3
         if pos is not None:
             self.cursor = pos
             if self.follow and not (v0 <= pos <= v1):
@@ -642,6 +748,12 @@ class App:
             cands = [c for c in ingest.scan(d, Path(arg), "script", db.connect(self.cfg.db_path)) if c.status == "new"]
             self.pending_import = {"device": d, "mount": Path(arg), "serial": "script", "cands": cands,
                                    "checked": [True] * len(cands), "open": True}
+        elif cmd == "fakejob":  # render the job bar with a given progress state (UI tests only)
+            i, n, stage, d, t = arg.split("/")
+            self.proc = subprocess.Popen(["sleep", "30"])
+            self.job_label, self.job_t0 = "Transcribing all new conversations", time.monotonic() - 42
+            self.proc_log = ["[2/4] 2025-10-02_141213_19966260"]
+            self.job_file, self.job_step = (int(i), int(n), "2025-10-02_141213_19966260"), (stage, int(d), int(t))
         elif cmd == "shot":
             self.shot_path = arg
             self.quit = True

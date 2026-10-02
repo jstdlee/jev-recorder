@@ -194,13 +194,21 @@ def cmd_transcribe(cfg, a):
         _transcribe_folders(cfg, con, folders, a)
 
 
+def progress_line(*fields):
+    """Machine-readable progress for the UI: 'PROGRESS file 2 5 name' / 'PROGRESS step asr 12 40'."""
+    print("PROGRESS " + " ".join(str(x) for x in fields), flush=True)
+
+
 def _transcribe_folders(cfg, con, folders, a):
     from . import search, thermal, transcribe
+    progress_line("file", 0, len(folders), "loading-models")
     engine = transcribe.Engine()
     for i, f in enumerate(folders, 1):
         print(f"[{i}/{len(folders)}] {f.name}", flush=True)
+        progress_line("file", i, len(folders), f.name)
         thermal.wait_cool()
-        segs = transcribe.transcribe_folder(f, engine, use_diarization=not a.no_diarization)
+        segs = transcribe.transcribe_folder(f, engine, use_diarization=not a.no_diarization,
+                                            progress=lambda st, d, t: progress_line("step", st, d, t))
         search.index_transcript(con, f)
         con.execute("UPDATE conversation SET status='transcribed' WHERE folder=?", (f.name,))
         con.commit()

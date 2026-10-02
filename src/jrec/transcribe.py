@@ -215,8 +215,13 @@ def _nemotron(audio):
         return diarize.run(Path(td) / "a.wav", Path(td) / "d.json")
 
 
-def transcribe_folder(folder, engine, use_diarization=True, log=print, diarizer=None):
-    """diarizer(audio16k) -> [{start, end, speaker}]; defaults to Nemotron in its own venv."""
+ASR_BATCH = 16
+
+
+def transcribe_folder(folder, engine, use_diarization=True, log=print, diarizer=None, progress=None):
+    """diarizer(audio16k) -> [{start, end, speaker}]; defaults to Nemotron in its own venv.
+    progress(stage, done, total) is called as work advances (stages: asr, align, speakers)."""
+    progress = progress or (lambda *a: None)
     folder = Path(folder)
     m = json.loads((folder / "manifest.json").read_text())
     audio, parts = load_clip(folder, m)
@@ -228,14 +233,20 @@ def transcribe_folder(folder, engine, use_diarization=True, log=print, diarizer=
     chunks = pick_chunks(regions, total, sp0, sp1)
     pieces = [audio[int(a * SR):int(b * SR)] for a, b in chunks]
     # language: probe the first speech chunks, force only a clearly dominant language
+    n = len(pieces)
+    progress("asr", 0, n)
     probe = engine.transcribe(pieces[:LANG_PROBE_CHUNKS])
     lang, counts = conversation_language(probe)
     log(f"  {len(chunks)} chunks ({sum(b - a for a, b in chunks):.0f}s of {total:.0f}s), language {lang or 'mixed'} {counts}")
-    res = probe if lang is None else engine.transcribe(pieces[:LANG_PROBE_CHUNKS], lang)
-    res = list(res) + list(engine.transcribe(pieces[LANG_PROBE_CHUNKS:], lang)) if len(pieces) > LANG_PROBE_CHUNKS else list(res)
+    res = list(probe if lang is None else engine.transcribe(pieces[:LANG_PROBE_CHUNKS], lang))
+    progress("asr", len(res), n)
+    for k in range(LANG_PROBE_CHUNKS, n, ASR_BATCH):
+        res += list(engine.transcribe(pieces[k:k + ASR_BATCH], lang))
+        progress("asr", len(res), n)
     # word times
     words = []
     q = [i for i, r in enumerate(res) if r.text.strip() and r.language.split(",")[0] in QWEN_ALIGN]
+    progress("align", 0, n)
     if q:
         al = engine.align_qwen([pieces[i] for i in q], [res[i].text for i in q], [res[i].language.split(",")[0] for i in q])
         for i, a in zip(q, al):
@@ -254,7 +265,11 @@ def transcribe_folder(folder, engine, use_diarization=True, log=print, diarizer=
         else:  # no aligner: one item spanning the chunk, flagged
             words.append({"w": r.text, "s": chunks[i][0], "e": chunks[i][1], "lang": lg or "unknown", "unaligned": True})
     words.sort(key=lambda w: w["s"])
+    progress("align", n, n)
+    if use_diarization:
+        progress("speakers", 0, 1)
     diar = (diarizer or _nemotron)(audio) if use_diarization else []
+    progress("speakers", 1, 1)
     segs = build_segments(words, diar, texts={i: r.text for i, r in enumerate(res)})
     meta = {"conversation": m["conversation"], "asr": ASR_MODEL, "aligners": [ALIGNER_MODEL, "MMS ctc-forced-aligner"],
             "diarization": diarize.MODEL if use_diarization else None, "language": lang, "language_counts": counts,
