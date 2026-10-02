@@ -3,7 +3,7 @@ name = "jev-recorder"
 version = "0.0.1"
 description = "Auto-import, segment, transcribe and timeline USB voice recordings, offline"
 requires-python = ">=3.12"
-dependencies = ["mutagen"]
+dependencies = ["mutagen", "tzdata; sys_platform == 'win32'"]
 
 [project.scripts]
 jrec = "jrec.cli:main"
