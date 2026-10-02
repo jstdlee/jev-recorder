@@ -37,6 +37,12 @@ model = "julia-1"
 
 [analysis]
 engine = "rules"          # rules | llm | jev | check (llm extraction, jev checks each claim)
+
+# speech recognition: qwen (Qwen3-ASR-1.7B, 52 languages, finds the language itself) or
+# cohere (Cohere Transcribe 03-2026, 14 languages; gated model, runs in .venv-nemo)
+[asr]
+engine = "qwen"           # qwen | cohere
+language = "auto"         # cohere only: auto (Qwen3-ASR finds it) or an ISO code: en zh ja ko de fr ...
 """
 
 
@@ -60,6 +66,7 @@ class Config:
     path: Path | None = None          # the config file this came from (or the default location)
     jev: dict = field(default_factory=lambda: {"url": "http://127.0.0.1:8011", "model": "julia-1"})
     analysis: dict = field(default_factory=lambda: {"engine": "rules"})
+    asr: dict = field(default_factory=lambda: {"engine": "qwen", "language": "auto"})
 
     @property
     def llm_override_path(self):
@@ -67,7 +74,7 @@ class Config:
         return (self.path.parent if self.path else Path("~/.config/jrec").expanduser()) / "llm.json"
 
     def save_section(self, section, values):
-        """Save app-edited values for 'jev' or 'analysis' into the override file."""
+        """Save app-edited values for 'jev', 'analysis' or 'asr' into the override file."""
         p = self.llm_override_path
         try:
             data = json.loads(p.read_text())
@@ -117,7 +124,8 @@ def load(path=None):
     llm = data.get("llm") or tomllib.loads(DEFAULT)["llm"]
     base = tomllib.loads(DEFAULT)
     cfg = Config(Path(data.get("library", "~/jrec-library")).expanduser(), devices, llm, path,
-                 {**base["jev"], **data.get("jev", {})}, {**base["analysis"], **data.get("analysis", {})})
+                 {**base["jev"], **data.get("jev", {})}, {**base["analysis"], **data.get("analysis", {})},
+                 {**base["asr"], **data.get("asr", {})})
     try:  # settings changed in the app win over the file
         over = json.loads(cfg.llm_override_path.read_text())
         for name, vals in over.get("profiles", {}).items():
@@ -126,6 +134,7 @@ def load(path=None):
             cfg.llm["default"] = over["default"]
         cfg.jev.update(over.get("jev", {}))
         cfg.analysis.update(over.get("analysis", {}))
+        cfg.asr.update(over.get("asr", {}))
     except (OSError, ValueError):
         pass
     return cfg

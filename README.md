@@ -2,7 +2,7 @@
 
 Plug in a USB voice recorder (Sony ICD-TX660 profile built in): recordings are archived
 untouched, conversations are cut with 10 min of raw audio kept on each side, transcribed
-offline (Qwen3-ASR-1.7B, word times, speakers) on a real wall-clock timeline, summarised by
+offline (Qwen3-ASR-1.7B or Cohere Transcribe, word times, speakers) on a real wall-clock timeline, summarised by
 any OpenAI-compatible LLM, and searchable. Every clip is an exact byte range of the archived
 original, with a shell command in `manifest.json` to verify it.
 
@@ -20,6 +20,20 @@ jrec verify                                               # re-check every clip 
 Config: `~/.config/jrec/config.toml` (defaults in `src/jrec/config.py`): library path, device
 profiles, and `[llm.profiles.*]` endpoints. Plan and decisions: [PLAN.md](PLAN.md).
 Diarization runs in `.venv-nemo` (Transformers >= 5); see `src/jrec/diarize.py`.
+
+## Speech model (Settings > Transcription, or `[asr]` in the config)
+
+| | Qwen3-ASR-1.7B (default) | [Cohere Transcribe 03-2026](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) |
+|---|---|---|
+| Languages | 52, finds the language itself | 14 (ar de el en es fr it ja ko nl pl pt vi zh), language must be given |
+| Runs in | `.venv` | `.venv-nemo` worker (Transformers >= 5.4) |
+| Word times | Qwen3-ForcedAligner / MMS | the same aligners |
+
+- `language = "auto"` (Cohere only): Qwen3-ASR finds each chunk's language, Cohere writes the text.
+  Chunks in other languages (Malay, Tamil, ...) keep the Qwen3-ASR text.
+- `language = "en"` (or another ISO code): Cohere only; Qwen3-ASR is not loaded.
+- The Cohere model is gated: accept its terms on Hugging Face, then `hf auth login`.
+- One run only: `jrec transcribe --asr cohere FOLDER`. `transcript.json` records the model in `asr`.
 
 ## Search syntax (sidebar search and "Find in this conversation")
 

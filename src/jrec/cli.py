@@ -7,7 +7,7 @@
   jrec sources                       archived recordings with start times and flags
   jrec cut                           find conversations in new archive files, cut verifiable clips
   jrec verify [FOLDER ...]           re-check clip hashes against the archived originals
-  jrec transcribe [FOLDER ...] [--no-diarization]
+  jrec transcribe [FOLDER ...] [--no-diarization] [--asr qwen|cohere]
                                      Qwen3-ASR-1.7B + word times + speakers -> transcript.{json,srt,vtt,md}
   jrec enhance [FOLDER ...]          listening track listen.opus (DeepFilterNet3, CPU)
   jrec summarize [FOLDER ...] [--llm PROFILE]
@@ -207,7 +207,7 @@ def progress_line(*fields):
 def _transcribe_folders(cfg, con, folders, a):
     from . import search, thermal, transcribe
     progress_line("file", 0, len(folders), "loading-models")
-    engine = transcribe.Engine()
+    engine = transcribe.make_engine({**cfg.asr, **({"engine": a.asr} if a.asr else {})})
     for i, f in enumerate(folders, 1):
         print(f"[{i}/{len(folders)}] {f.name}", flush=True)
         progress_line("file", i, len(folders), f.name)
@@ -359,6 +359,7 @@ def main(argv=None):
     v = sub.add_parser("verify"); v.add_argument("folders", nargs="*")
     t = sub.add_parser("transcribe"); t.add_argument("folders", nargs="*")
     t.add_argument("--no-diarization", action="store_true")
+    t.add_argument("--asr", choices=["qwen", "cohere"], help="override the speech model from Settings")
     e = sub.add_parser("enhance"); e.add_argument("folders", nargs="*")
     sm = sub.add_parser("summarize"); sm.add_argument("folders", nargs="*"); sm.add_argument("--llm")
     q = sub.add_parser("search"); q.add_argument("query")

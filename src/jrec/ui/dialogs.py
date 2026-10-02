@@ -5,6 +5,7 @@ import urllib.request
 from imgui_bundle import imgui
 
 from .. import db
+from .. import cohere_asr
 from .. import theme as th
 from ..theme import C
 from . import anim
@@ -71,6 +72,7 @@ def _settings_rows(app):
               "dskip": lambda: app.skip_silence, "dsound": lambda: app.player.sound,
               "chunk": lambda: int(prof.get("chunk_chars", 256000)), "overlap": lambda: int(prof.get("overlap_chars", 8000)),
               "tto": lambda: app.prefs["translate_to"], "aeng": lambda: app.cfg.analysis.get("engine", "rules"),
+              "asr": lambda: app.cfg.asr.get("engine", "qwen"),
               "rmotion": lambda: bool(app.prefs.get("reduce_motion"))}
 
     def set_skip(v):
@@ -125,6 +127,17 @@ def _settings_rows(app):
             th.small(app.jev_test, "ok" if app.jev_test.startswith("Connected") else
                      "text_dim" if app.jev_test == "Checking…" else "danger")
 
+    def asr_lang_row(t, d):
+        buf = app.llm_edit.setdefault("asr_lang", app.cfg.asr.get("language", "auto"))
+        done, buf = text_row(app, t, d, "asr_lang", buf, "auto", width=120)
+        app.llm_edit["asr_lang"] = buf
+        if done:
+            v = buf.strip().lower()
+            if v == "auto" or v in cohere_asr.LANGS:
+                app.cfg.save_section("asr", {"language": v})
+            else:
+                app.llm_edit["asr_lang"] = app.cfg.asr.get("language", "auto")
+
     def info_row(text):
         def render(t, d):
             hl(app, t)
@@ -160,6 +173,11 @@ def _settings_rows(app):
         ("Summaries and translation", "Translate into", "Target language for the translate buttons",
          seg_row("tto", TRANSLATE_TARGETS, None, lambda v: app.set_pref("translate_to", v))),
         ("Summaries and translation", "Connection", "Check that the server answers", test_row),
+        ("Transcription", "Speech model", "Used by the next Transcribe; files already done keep their text",
+         seg_row("asr", ["qwen", "cohere"], ["Qwen3-ASR", "Cohere Transcribe"],
+                 lambda v: app.cfg.save_section("asr", {"engine": v}))),
+        ("Transcription", "Cohere language", "auto, or one of " + " ".join(cohere_asr.LANGS)
+         + "; auto lets Qwen3-ASR find it and keeps Qwen text for other languages", asr_lang_row),
         ("Analysis", "Engine", "Rules work offline; LLM and jev need their servers",
          seg_row("aeng", ["rules", "llm", "jev", "check"], ["Rules", "LLM", "jev", "LLM + jev"],
                  lambda v: app.cfg.save_section("analysis", {"engine": v}))),

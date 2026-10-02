@@ -35,7 +35,7 @@ def _transcribe_all(cfg, con, out, todo, diarization, log):
     from . import search, transcribe
     from .cli import progress_line
     progress_line("file", 0, len(todo), "loading-models")
-    engine = transcribe.Engine()
+    engine = transcribe.make_engine(cfg.asr)
     for i, name in enumerate(todo, 1):
         progress_line("file", i, len(todo), name)
         thermal.wait_cool(log=log)

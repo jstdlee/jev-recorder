@@ -1,6 +1,7 @@
 """Conversation folder -> transcript with speakers, word times and absolute clock times.
 
-ASR: Qwen3-ASR-1.7B on raw audio (M0: denoised input hurts). Every second of the speech
+ASR: Qwen3-ASR-1.7B (default) or Cohere Transcribe (Settings > Transcription, [asr] engine),
+on raw audio (M0: denoised input hurts). Every second of the speech
 span is transcribed (contiguous chunks cut in silences); in the padding, only chunks that
 VAD marks as speech. The conversation language is detected from the first chunks and
 forced only when one language clearly dominates, so code-switching is not suppressed.
@@ -24,7 +25,8 @@ ALIGNER_MODEL = "Qwen/Qwen3-ForcedAligner-0.6B"
 QWEN_ALIGN = {"Chinese", "Cantonese", "English", "Japanese", "Korean", "German", "Spanish", "French",
               "Italian", "Portuguese", "Russian"}
 MMS_ISO = {"Malay": "msa", "Indonesian": "ind", "Thai": "tha", "Vietnamese": "vie", "Filipino": "tgl",
-           "Hindi": "hin", "Arabic": "ara", "Turkish": "tur", "Dutch": "nld", "Persian": "fas"}
+           "Hindi": "hin", "Arabic": "ara", "Turkish": "tur", "Dutch": "nld", "Persian": "fas",
+           "Greek": "ell", "Polish": "pol"}
 NO_SPACE = {"Chinese", "Cantonese", "Japanese", "Thai"}
 LANG_DOMINANCE = 0.7
 LANG_PROBE_CHUNKS = 6
@@ -62,6 +64,8 @@ def pick_chunks(regions, total, speech_start, speech_end, max_len=30.0):
 
 # ---------- models ----------
 class Engine:
+    model_name = ASR_MODEL
+
     def __init__(self, device="cuda:0"):
         import torch
         from qwen_asr import Qwen3ASRModel
@@ -90,6 +94,62 @@ class Engine:
         tt, txt = preprocess_text(text, romanize=True, language=MMS_ISO[lang])
         segs, scores, blank = get_alignments(em, tt, tok)
         return [(w["text"], w["start"], w["end"]) for w in postprocess_results(txt, get_spans(tt, segs, blank), stride, scores)]
+
+
+class CohereEngine:
+    """Cohere Transcribe for the text (worker in the diarization venv), Qwen3-ForcedAligner for word times.
+    Cohere has no language detection: language='auto' asks Qwen3-ASR for each chunk's language and keeps
+    Qwen3-ASR's own text for languages outside Cohere's 14; an ISO code ('en', 'zh', ...) forces one."""
+    from .cohere_asr import MODEL as model_name
+
+    def __init__(self, device="cuda:0", language="auto"):
+        import torch
+        from qwen_asr import Qwen3ForcedAligner
+        from . import cohere_asr
+        self.device, self.language, self._mms, self._lid = device, language, None, None
+        self.aligner = Qwen3ForcedAligner.from_pretrained(ALIGNER_MODEL, dtype=torch.bfloat16, device_map=device)
+        self.worker = cohere_asr.Worker()
+
+    def _qwen(self):
+        if self._lid is None:
+            import torch
+            from qwen_asr import Qwen3ASRModel
+            self._lid = Qwen3ASRModel.from_pretrained(ASR_MODEL, dtype=torch.bfloat16, device_map=self.device,
+                                                      max_inference_batch_size=16, max_new_tokens=1024)
+        return self._lid
+
+    def transcribe(self, pieces, language=None):
+        from types import SimpleNamespace as NS
+        from .cohere_asr import ISO, LANGS
+        if language is None and self.language in LANGS:
+            language = LANGS[self.language]
+        if language is not None:
+            if language in ISO:
+                return [NS(text=t, language=language) for t in self.worker.transcribe(pieces, ISO[language])]
+            return self._qwen().transcribe(audio=[(p, SR) for p in pieces], language=[language] * len(pieces))
+        out = list(self._qwen().transcribe(audio=[(p, SR) for p in pieces]))  # language per chunk
+        groups = {}
+        for i, r in enumerate(out):
+            lg = (r.language or "").split(",")[0]
+            if r.text.strip() and lg in ISO:
+                groups.setdefault(lg, []).append(i)
+        for lg, idx in groups.items():
+            for i, t in zip(idx, self.worker.transcribe([pieces[i] for i in idx], ISO[lg])):
+                out[i] = NS(text=t, language=lg)
+        return out
+
+    def align_qwen(self, pieces, texts, langs):
+        return self.aligner.align(audio=[(p, SR) for p in pieces], text=texts, language=langs)
+
+    align_mms = Engine.align_mms
+
+
+def make_engine(asr_cfg=None):
+    """The ASR engine chosen in Settings ([asr] engine = qwen | cohere, language = auto | ISO code)."""
+    asr_cfg = asr_cfg or {}
+    if asr_cfg.get("engine") == "cohere":
+        return CohereEngine(language=asr_cfg.get("language", "auto"))
+    return Engine()
 
 
 def conversation_language(results):
@@ -293,7 +353,7 @@ def transcribe_folder(folder, engine, use_diarization=True, log=print, diarizer=
     diar = (diarizer or _nemotron)(audio) if use_diarization else []
     progress("speakers", 1, 1)
     segs = merge_fragments(build_segments(words, diar, texts={i: r.text for i, r in enumerate(res)}))
-    meta = {"conversation": m["conversation"], "asr": ASR_MODEL, "aligners": [ALIGNER_MODEL, "MMS ctc-forced-aligner"],
+    meta = {"conversation": m["conversation"], "asr": getattr(engine, "model_name", ASR_MODEL), "aligners": [ALIGNER_MODEL, "MMS ctc-forced-aligner"],
             "diarization": diarize.MODEL if use_diarization else None, "language": lang, "language_counts": counts,
             "chunks": [[round(a, 2), round(b, 2)] for a, b in chunks],
             "created": datetime.now().astimezone().isoformat(timespec="seconds")}
