@@ -44,3 +44,4 @@ def test_padding_clamped_at_stream_start(tmp_path):
     a = make_audio(tmp_path / "a.mp3", 40)
     (m,) = cutter.cut_stream([_src(a, t0, "x.mp3", "d" * 64)], tmp_path / "o", pad=600, regions=[(5, 30)])
     assert m["parts"][0]["t_start"] == 0.0 and m["window"]["start"] == t0.isoformat()
+    assert m["window"]["requested"][0] == t0.isoformat()

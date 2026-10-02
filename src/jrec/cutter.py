@@ -122,15 +122,22 @@ def cut_stream(stream, out_root, pad=segment.PAD, gap=segment.GAP, min_speech=se
                 "verify": verify_cmd(f"{s.sha256}.{s.ext}", info),
             })
         abs_ = lambda x: (t0 + timedelta(seconds=x)).isoformat()
+        # the clip starts/ends on whole frames: report the audio actually covered, and give
+        # VAD regions relative to that real start
+        c0 = (offsets[stream.index(next(s for s in stream if s.sha256 == parts[0]["source_sha256"]))]
+              + parts[0]["t_start"])
+        c1 = (offsets[stream.index(next(s for s in stream if s.sha256 == parts[-1]["source_sha256"]))]
+              + parts[-1]["t_end"])
         m = {
             "version": 1, "conversation": folder.name,
-            "window": {"start": abs_(w.start), "end": abs_(w.end), "speech_start": abs_(w.speech_start),
-                       "speech_end": abs_(w.speech_end), "speech_sec": round(w.speech_sec, 2)},
+            "window": {"start": parts[0]["abs_start"], "end": parts[-1]["abs_end"],
+                       "speech_start": abs_(w.speech_start), "speech_end": abs_(w.speech_end),
+                       "speech_sec": round(w.speech_sec, 2), "requested": [abs_(w.start), abs_(w.end)]},
             "rules": {"pad_sec": pad, "gap_sec": gap, "min_speech_sec": min_speech,
                       "padding": "kept on both sides, clamped only at the stream's own start/end"},
             "parts": parts, "seams": seams,
-            "vad": {"model": "silero-vad", "regions_sec": [[round(a - w.start, 2), round(b - w.start, 2)]
-                                                          for a, b in regions if b > w.start and a < w.end]},
+            "vad": {"model": "silero-vad", "regions_sec": [[round(a - c0, 3), round(b - c0, 3)]
+                                                          for a, b in regions if b > c0 and a < c1]},
             "created": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
         (folder / "manifest.json").write_text(json.dumps(m, indent=1, ensure_ascii=False))

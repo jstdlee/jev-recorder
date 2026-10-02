@@ -7,6 +7,8 @@
   jrec sources                       archived recordings with start times and flags
   jrec cut                           find conversations in new archive files, cut verifiable clips
   jrec verify [FOLDER ...]           re-check clip hashes against the archived originals
+  jrec transcribe [FOLDER ...] [--no-diarization]
+                                     Qwen3-ASR-1.7B + word times + speakers -> transcript.{json,srt,vtt,md}
 """
 import argparse
 import json
@@ -161,6 +163,26 @@ def cmd_verify(cfg, a):
     sys.exit(1 if bad else 0)
 
 
+def cmd_transcribe(cfg, a):
+    from . import transcribe
+    con = db.connect(cfg.db_path)
+    if a.folders:
+        folders = [Path(f) for f in a.folders]
+    else:
+        folders = [cfg.library / "conversations" / r["folder"]
+                   for r in con.execute("SELECT folder FROM conversation WHERE status='cut' ORDER BY speech_start")]
+    if not folders:
+        print("nothing to transcribe")
+        return
+    engine = transcribe.Engine()
+    for i, f in enumerate(folders, 1):
+        print(f"[{i}/{len(folders)}] {f.name}", flush=True)
+        segs = transcribe.transcribe_folder(f, engine, use_diarization=not a.no_diarization)
+        con.execute("UPDATE conversation SET status='transcribed' WHERE folder=?", (f.name,))
+        con.commit()
+        print(f"  {len(segs)} segments, {len({s['speaker'] for s in segs if s['speaker']})} speakers -> {f}/transcript.md")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="jrec", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config")
@@ -173,10 +195,12 @@ def main(argv=None):
     sub.add_parser("sources")
     c = sub.add_parser("cut"); c.add_argument("--all", action="store_true", help="re-cut already cut sources too")
     v = sub.add_parser("verify"); v.add_argument("folders", nargs="*")
+    t = sub.add_parser("transcribe"); t.add_argument("folders", nargs="*")
+    t.add_argument("--no-diarization", action="store_true")
     a = ap.parse_args(argv)
     cfg = config.load(a.config)
     {"devices": cmd_devices, "scan": cmd_scan, "import": cmd_import, "sources": cmd_sources,
-     "cut": cmd_cut, "verify": cmd_verify}[a.cmd](cfg, a)
+     "cut": cmd_cut, "verify": cmd_verify, "transcribe": cmd_transcribe}[a.cmd](cfg, a)
 
 
 if __name__ == "__main__":
