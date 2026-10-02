@@ -101,3 +101,18 @@ def test_nothing_touches_the_evidence(tmp_path):
     assert before == after and (folder / "manifest.json").read_bytes() == manifest_before
     assert cutter.verify_folder(folder, arch) == []
     assert db.get_summary(con, folder.name)["title"] == "t"
+
+
+def test_export_excerpt_is_byte_exact_and_library_untouched(tmp_path):
+    from jrec import export
+    folder, arch = _conv(tmp_path)
+    m = json.loads((folder / "manifest.json").read_text())
+    before = {p.name: _sha(p) for p in list(arch.iterdir()) + list(folder.iterdir()) if p.is_file()}
+    out = export.export_range(m, arch, tmp_path / "exports", 5.0, 12.0, "promise")
+    em = json.loads((out / "manifest.json").read_text())
+    (p,) = em["parts"]
+    data = (arch / f"{p['source_sha256']}.mp3").read_bytes()
+    assert (out / p["file"]).read_bytes() == data[p["byte_start"]:p["byte_end"]]
+    assert em["kind"] == "excerpt" and em["label"] == "promise"
+    after = {p.name: _sha(p) for p in list(arch.iterdir()) + list(folder.iterdir()) if p.is_file()}
+    assert before == after

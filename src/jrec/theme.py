@@ -10,7 +10,8 @@ from pathlib import Path
 from imgui_bundle import imgui
 
 PREFS_PATH = Path("~/.config/jrec/ui.json").expanduser()
-DEFAULT_PREFS = {"theme": "Dark", "text_size": 1.0, "speed": 1.0, "skip_silence": True, "follow": True}
+DEFAULT_PREFS = {"theme": "Dark", "text_size": 1.0, "speed": 1.0, "skip_silence": True, "follow": True,
+                 "translate_to": "English", "axis": "clock", "sound": "original", "channel": "both"}
 
 
 def hexc(h, a=1.0):
@@ -22,11 +23,13 @@ TOKENS = {
     "Dark": {"bg": "#1c1c1f", "card": "#252528", "card_border": "#303034", "divider": "#2c2c30", "text": "#e8e8ec",
              "text_dim": "#8e8e96", "track": "#2e2e33", "pill": "#3a3a40", "pill_border": "#45454b",
              "accent": "#0a84ff", "danger": "#ff453a", "warn": "#ff9f0a", "ok": "#30d158",
-             "wave": "#64a8ff", "pad_shade": "#1f1f22", "playhead": "#ffd60a"},
+             "wave": "#64a8ff", "pad_shade": "#1f1f22", "playhead": "#f5f5f7", "match": "#ffd60a",
+             "note": "#bf5af2"},
     "Light": {"bg": "#f4f4f6", "card": "#ffffff", "card_border": "#e3e3e8", "divider": "#ececf0", "text": "#212126",
               "text_dim": "#737379", "track": "#f1f1f4", "pill": "#ffffff", "pill_border": "#e3e3e8",
               "accent": "#007aff", "danger": "#ff3b30", "warn": "#c93400", "ok": "#248a3d",
-              "wave": "#2f7de1", "pad_shade": "#ebebef", "playhead": "#e08600"},
+              "wave": "#2f7de1", "pad_shade": "#ebebef", "playhead": "#1d1d1f", "match": "#e0a800",
+              "note": "#9a3fc4"},
 }
 
 T = dict(TOKENS["Dark"])   # current tokens as hex; C(name) -> ImVec4

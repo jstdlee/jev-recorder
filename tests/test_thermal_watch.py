@@ -18,3 +18,20 @@ def test_no_sensors_means_no_wait():
 
 def test_new_mounts_only_reports_newly_plugged():
     assert watch.new_mounts({"/media/u/IC RECORDER"}, {"/media/u/IC RECORDER": 1, "/media/u/OTHER": 2}) == ["/media/u/OTHER"]
+
+
+def test_goto_parsing():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from jrec.timeref import parse
+    t0 = datetime(2025, 10, 2, 14, 2, 13, tzinfo=ZoneInfo("Asia/Singapore"))
+    dur = 1560.0
+    assert parse("14:15:30", t0, 100, dur) == 797.0           # clock time
+    assert parse("14:15", t0, 100, dur) == 767.0              # clock (inside the clip)
+    assert parse("+30", t0, 100, dur) == 130.0                # from the playhead
+    assert parse("-1:00", t0, 100, dur) == 40.0
+    assert parse("@5:00", t0, 100, dur) == 300.0              # from the start
+    assert parse("2:30", t0, 100, dur) == 150.0               # not a plausible clock time -> mm:ss
+    assert parse("90", t0, 100, dur) == 90.0
+    assert parse("99:99:99", t0, 100, dur) == dur             # clamped
+    assert parse("abc", t0, 100, dur) is None

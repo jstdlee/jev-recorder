@@ -1,0 +1,428 @@
+"""Pop-up windows: recorder import, settings, one transcript row, a note, a speaker name, job progress."""
+import threading
+import urllib.request
+
+from imgui_bundle import imgui
+
+from .. import db
+from .. import theme as th
+from ..theme import C
+from .flags import LANG, lang_badge
+from .timeline import fmt_offset
+
+TRANSLATE_TARGETS = ["English", "Chinese", "Cantonese", "Malay"]
+
+
+def _center(width):
+    vp = imgui.get_main_viewport()
+    # centred every frame (the height is only known after the first frame; no title bar to drag anyway)
+    imgui.set_next_window_pos(imgui.ImVec2(vp.work_pos.x + vp.work_size.x / 2, vp.work_pos.y + vp.work_size.y / 2),
+                              imgui.Cond_.always, imgui.ImVec2(0.5, 0.5))
+    w = min(width, vp.work_size.x - 60)
+    imgui.set_next_window_size(imgui.ImVec2(w, 0), imgui.Cond_.always)
+    # never taller than the window: long dialogs scroll inside
+    imgui.set_next_window_size_constraints(imgui.ImVec2(w, 0), imgui.ImVec2(w, vp.work_size.y * 0.88))
+
+
+def _begin_modal(name, open_flag, width):
+    if open_flag and not imgui.is_popup_open(name):
+        imgui.open_popup(name)
+    _center(width)
+    imgui.push_style_color(imgui.Col_.popup_bg, C("bg"))
+    opened, _ = imgui.begin_popup_modal(name, None, imgui.WindowFlags_.no_saved_settings | imgui.WindowFlags_.no_title_bar)
+    imgui.pop_style_color()
+    if opened and imgui.is_key_pressed(imgui.Key.escape, False) and not imgui.get_io().want_text_input:
+        imgui.close_current_popup()
+        imgui.end_popup()
+        return None
+    return opened
+
+
+def title(text):
+    imgui.push_font(None, imgui.get_style().font_size_base * 1.2)
+    imgui.text(text)
+    imgui.pop_font()
+
+
+def row_line(label, value):
+    imgui.text(label)
+    imgui.same_line(140 * imgui.get_style().font_scale_main)
+    th.small(value)
+
+
+# ------------------------------------------------------------- settings
+def settings(app):
+    r = _begin_modal("Settings", app.show_settings, 700 * app.prefs["text_size"])
+    if r is None:
+        app.show_settings = False
+        return
+    if not r:
+        return
+    th.section("Appearance")
+    with th.card("set_look", flags=imgui.ChildFlags_.auto_resize_y):
+        ch, v = setting_row(app, "Theme", "Dark or light; applies at once", "theme", app.prefs["theme"], ["Dark", "Light"])
+        if ch:
+            app.set_pref("theme", v)
+        imgui.separator()
+        ch, v = setting_row(app, "Text size", "Everything in the window; Ctrl+ Ctrl– Ctrl+0 too", "size",
+                            app.prefs["text_size"], [1.0, 1.1, 1.25, 1.5], ["100%", "110%", "125%", "150%"])
+        if ch:
+            app.set_pref("text_size", v)
+        imgui.separator()
+        ch, v = setting_row(app, "Time axis", "Label the timeline with the clock, or time since the clip starts", "axis",
+                            app.prefs["axis"], ["clock", "offset"], ["Clock", "From start"])
+        if ch:
+            app.set_pref("axis", v)
+    th.section("Playback")
+    with th.card("set_play", flags=imgui.ChildFlags_.auto_resize_y):
+        ch, v = setting_row(app, "Speed", "Pitch stays natural at every speed", "dspeed", app.player.speed,
+                            [1.0, 1.25, 1.5, 2.0, 3.0], ["1×", "1.25×", "1.5×", "2×", "3×"])
+        if ch:
+            app.set_speed(v)
+        imgui.separator()
+        ch, v = setting_row(app, "Skip silence", "Jump over quiet gaps longer than 3 s while playing", "dskip",
+                            app.skip_silence, [False, True], ["Off", "On"])
+        if ch:
+            app.skip_silence = v
+            app.set_pref("skip_silence", v)
+    th.section("Summaries and translation")
+    with th.card("set_llm", flags=imgui.ChildFlags_.auto_resize_y):
+        prof = app.cfg.llm_profile()
+        name = app.cfg.llm.get("default")
+        changed = {}
+        for key, label, desc, hint in (("base_url", "Server", "Any OpenAI-compatible endpoint", "http://localhost:8888/v1"),
+                                       ("model", "Model", "Name the server expects", "default"),
+                                       ("api_key_env", "API key variable", "Read the key from this environment variable",
+                                        "OPENAI_API_KEY")):
+            buf = app.llm_edit.setdefault(key, str(prof.get(key, "") or ""))
+            done, buf = text_row(app, label, desc, f"llm_{key}", buf, hint)
+            app.llm_edit[key] = buf
+            if done and buf != str(prof.get(key, "") or ""):
+                changed[key] = buf
+            imgui.separator()
+        ch, v = setting_row(app, "Chunk size", "Long transcripts are summarised in parts this long (characters)",
+                            "chunk", int(prof.get("chunk_chars", 256000)), [32000, 64000, 128000, 256000],
+                            ["32k", "64k", "128k", "256k"])
+        if ch:
+            changed["chunk_chars"] = v
+        imgui.separator()
+        ch, v = setting_row(app, "Overlap", "Each part repeats the end of the previous one, for context",
+                            "overlap", int(prof.get("overlap_chars", 8000)), [2000, 8000, 16000], ["2k", "8k", "16k"])
+        if ch:
+            changed["overlap_chars"] = v
+        imgui.separator()
+        ch, v = setting_row(app, "Translate into", "Target language for the translate buttons", "tto",
+                            app.prefs["translate_to"], TRANSLATE_TARGETS)
+        if ch:
+            app.set_pref("translate_to", v)
+        if changed:
+            app.cfg.save_llm(name, changed)
+        imgui.separator()
+        if th.button("Test connection"):
+            app.llm_test = "Checking…"
+            threading.Thread(target=_test_llm, args=(app, dict(prof)), daemon=True).start()
+        if app.llm_test:
+            imgui.same_line()
+            imgui.align_text_to_frame_padding()
+            th.small(app.llm_test, "ok" if app.llm_test.startswith("Connected") else
+                     "text_dim" if app.llm_test == "Checking…" else "danger")
+    th.section("Library")
+    with th.card("set_lib", flags=imgui.ChildFlags_.auto_resize_y):
+        imgui.text("Folder")
+        th.small(str(app.cfg.library))
+        imgui.separator()
+        imgui.text("Evidence")
+        th.small("Original recordings and clips are never changed. Notes, translations, names and summaries are "
+                 "kept separately in the library database.")
+    th.small("Changes are saved as you make them.")
+    if th.button("Done"):
+        imgui.close_current_popup()
+        app.show_settings = False
+    imgui.end_popup()
+
+
+def _test_llm(app, prof):
+    try:
+        with urllib.request.urlopen(prof["base_url"].rstrip("/") + "/models", timeout=5) as r:
+            import json
+            ids = [m.get("id") for m in json.loads(r.read()).get("data", [])]
+        app.llm_test = f"Connected: {', '.join(ids[:3]) or 'no models listed'}"
+    except Exception as e:
+        app.llm_test = f"Not reachable: {str(e)[:80]}"
+
+
+def setting_row(app, title_, desc, id_, value, options, labels=None):
+    """Magpie row: title + one grey line on the left, segmented control on the right."""
+    labels = labels or [str(o) for o in options]
+    y0 = imgui.get_cursor_pos_y()
+    imgui.text(title_)
+    th.small(desc)
+    y1 = imgui.get_cursor_pos_y()
+    w = th.seg_width(labels)
+    imgui.set_cursor_pos(imgui.ImVec2(imgui.get_window_width() - w - 14, y0 + (y1 - y0 - imgui.get_frame_height()) / 2 - 2))
+    ch, v = th.seg(id_, value, options, labels)
+    imgui.set_cursor_pos(imgui.ImVec2(imgui.get_style().window_padding.x, y1))
+    imgui.dummy(imgui.ImVec2(0, 0))
+    return ch, v
+
+
+def text_row(app, title_, desc, id_, buf, hint, width=300):
+    """Row with an inline field on the right; returns (finished_editing, text). Saved when you leave the field."""
+    y0 = imgui.get_cursor_pos_y()
+    imgui.text(title_)
+    th.small(desc)
+    y1 = imgui.get_cursor_pos_y()
+    w = width * app.prefs["text_size"]
+    imgui.set_cursor_pos(imgui.ImVec2(imgui.get_window_width() - w - 14, y0 + (y1 - y0 - imgui.get_frame_height()) / 2 - 2))
+    imgui.set_next_item_width(w)
+    _, buf = imgui.input_text_with_hint(f"##{id_}", hint, buf)
+    done = imgui.is_item_deactivated_after_edit()
+    imgui.set_cursor_pos(imgui.ImVec2(imgui.get_style().window_padding.x, y1))
+    imgui.dummy(imgui.ImVec2(0, 0))
+    return done, buf
+
+
+# ------------------------------------------------------------- one transcript row
+def row_view(app):
+    rv = app.row_view
+    r = _begin_modal("Row", rv is not None, 760 * app.prefs["text_size"])
+    if r is None:
+        app.row_view = None
+        return
+    if not r:
+        return
+    c, i = rv
+    s = c.segments[i]
+    t_next = c.segments[i + 1]["_t0"] if i + 1 < len(c.segments) else c.duration
+    title(f"{c.speaker(s) or 'Speaker'}  ·  {s['abs_start'][11:19]}–{s['abs_end'][11:19]}")
+    th.small(f"{fmt_offset(s['_t0'])} into the clip  ·  {s['_t1'] - s['_t0']:.1f} s  ·  row {i + 1} of {len(c.segments)}")
+    imgui.dummy(imgui.ImVec2(0, 4))
+    with th.card("rv_orig", flags=imgui.ChildFlags_.auto_resize_y):
+        lang_badge(s.get("lang"), clickable=False, id_="rvo")
+        imgui.same_line()
+        th.small(f"Original, {s.get('lang') or 'unknown language'}")
+        imgui.push_text_wrap_pos(0)
+        imgui.text(s["text"])
+        imgui.pop_text_wrap_pos()
+    for L, tr in c.translations.items():
+        if i in tr:
+            with th.card(f"rv_{L}", flags=imgui.ChildFlags_.auto_resize_y):
+                lang_badge(L, clickable=False, id_=f"rv{L}")
+                imgui.same_line()
+                th.small(f"Translation, {L}")
+                imgui.push_text_wrap_pos(0)
+                imgui.text(tr[i])
+                imgui.pop_text_wrap_pos()
+    notes = c.notes_in(s["_t0"] if i else 0.0, t_next)
+    th.section("Your notes")
+    with th.card("rv_notes", flags=imgui.ChildFlags_.auto_resize_y):
+        for nt in notes:
+            imgui.push_style_color(imgui.Col_.text, C("note"))
+            if imgui.selectable(f"{c.abs_at(nt['t']):%H:%M:%S}  {nt['text']}##rvn{nt['id']}", False)[0]:
+                app.edit_note(c, nt)
+            imgui.pop_style_color()
+        if not notes:
+            th.small("No notes on this row yet.")
+        if th.button("Add a note to this row"):
+            app.new_note(c, s["_t0"])
+    imgui.dummy(imgui.ImVec2(0, 4))
+    if th.primary_button("Play row"):
+        app.seek(c, max(0.0, s["_t0"] - 0.2), play=True)
+    imgui.same_line()
+    if th.button("Repeat row", help_="Loop this row (A–B) until you stop it"):
+        app.range_ab = (max(0.0, s["_t0"] - 0.3), min(c.duration, s["_t1"] + 0.3))
+        app.loop = True
+        app.seek(c, app.range_ab[0], play=True)
+    imgui.same_line()
+    to = app.prefs["translate_to"]
+    if th.button(f"Translate into {to}", disabled=app.job_busy or i in c.translations.get(to, {}),
+                 why="Already translated" if i in c.translations.get(to, {}) else "A job is running"):
+        app.translate(c, to, rows=[i])
+    imgui.same_line()
+    if th.button("Copy text"):
+        imgui.set_clipboard_text(s["text"] + "".join(f"\n[{L}] {tr[i]}" for L, tr in c.translations.items() if i in tr))
+    imgui.same_line()
+    if th.button("Close"):
+        imgui.close_current_popup()
+        app.row_view = None
+    imgui.end_popup()
+
+
+# ------------------------------------------------------------- notes
+def note_editor(app):
+    ne = app.note_edit
+    r = _begin_modal("Note", ne is not None, 560 * app.prefs["text_size"])
+    if r is None:
+        app.note_edit = None
+        return
+    if not r:
+        return
+    c = ne["conv"]
+    title("Edit note" if ne.get("id") else "New note")
+    th.small(f"At {c.abs_at(ne['t']):%Y-%m-%d %H:%M:%S}  ·  {fmt_offset(ne['t'])} into the clip. "
+             "Notes are yours: shown in purple, stored apart from the recording.")
+    if ne.pop("focus", False):
+        imgui.set_keyboard_focus_here()
+    _, ne["text"] = imgui.input_text_multiline("##note", ne["text"], imgui.ImVec2(-1, 110 * app.prefs["text_size"]))
+    if th.primary_button("Save", disabled=not ne["text"].strip(), why="Write something first"):
+        if ne.get("id"):
+            db.update_note(app.con, ne["id"], ne["text"].strip())
+        else:
+            db.add_note(app.con, c.name, ne["t"], c.abs_at(ne["t"]).isoformat(), ne["text"].strip())
+        c.notes = db.notes(app.con, c.name)
+        imgui.close_current_popup()
+        app.note_edit = None
+    imgui.same_line()
+    if th.button("Cancel"):
+        imgui.close_current_popup()
+        app.note_edit = None
+    if ne.get("id"):
+        imgui.same_line()
+        imgui.push_style_color(imgui.Col_.text, C("danger"))
+        if imgui.button("Delete note"):
+            db.delete_note(app.con, ne["id"])
+            c.notes = db.notes(app.con, c.name)
+            imgui.close_current_popup()
+            app.note_edit = None
+        imgui.pop_style_color()
+    imgui.end_popup()
+
+
+# ------------------------------------------------------------- speaker name
+def speaker_editor(app):
+    se = app.speaker_edit
+    r = _begin_modal("Speaker", se is not None, 460 * app.prefs["text_size"])
+    if r is None:
+        app.speaker_edit = None
+        return
+    if not r:
+        return
+    c = se["conv"]
+    title(f"Name for {se['speaker']}")
+    th.small("Used everywhere in this conversation. Leave empty to go back to the label.")
+    if se.pop("focus", False):
+        imgui.set_keyboard_focus_here()
+    imgui.set_next_item_width(-1)
+    enter, se["name"] = imgui.input_text_with_hint("##spk", "e.g. Mum", se["name"], imgui.InputTextFlags_.enter_returns_true)
+    if th.primary_button("Save") or enter:
+        db.set_speaker_name(app.con, c.name, se["speaker"], se["name"])
+        c.names = db.speaker_names(app.con, c.name)
+        imgui.close_current_popup()
+        app.speaker_edit = None
+    imgui.same_line()
+    if th.button("Cancel"):
+        imgui.close_current_popup()
+        app.speaker_edit = None
+    imgui.end_popup()
+
+
+# ------------------------------------------------------------- job progress
+def progress(app):
+    r = _begin_modal("Progress", app.show_progress, 640 * app.prefs["text_size"])
+    if r is None:
+        app.show_progress = False
+        return
+    if not r:
+        return
+    title(app.job_label or "Background job")
+    busy = app.job_busy
+    th.small((f"Running for {app.job_elapsed():.0f} s. You can keep listening and taking notes meanwhile."
+              if busy else ("Failed: see the log below." if app.job_exit else "Finished.")),
+             "danger" if app.job_exit and not busy else "text_dim")
+    imgui.dummy(imgui.ImVec2(0, 4))
+    files = app.job_files
+    overall = app.job_overall()
+    imgui.progress_bar(overall if busy or not app.job_exit else 0.0, imgui.ImVec2(-1, 0),
+                       f"Overall  ·  {overall * 100:.0f}%")
+    th.section("Conversations")
+    with th.card("prog_files", flags=imgui.ChildFlags_.auto_resize_y):
+        if not files:
+            th.small("Loading models (the first run takes 1-2 minutes)…" if busy else "Nothing to show.")
+        for k, name in enumerate(files, 1):
+            i = app.job_file[0] if app.job_file else 0
+            if k < i or (not busy and not app.job_exit):
+                frac, lab = 1.0, "done"
+            elif k == i:
+                frac, lab = app.job_file_frac(), app.job_stage_label()
+            else:
+                frac, lab = 0.0, "waiting"
+            imgui.text(app.conv_label(name))
+            imgui.progress_bar(frac, imgui.ImVec2(-1, 0), lab)
+    th.section("Log")
+    with th.card("prog_log", imgui.ImVec2(0, 140 * app.prefs["text_size"]), padding=(10, 8)):
+        for line in app.proc_log[-60:]:
+            th.small(line, "danger" if "rror" in line or "failed" in line else "text_dim")
+        if app.job_busy:
+            imgui.set_scroll_here_y(1.0)
+    if th.button("Hide" if busy else "Close"):
+        imgui.close_current_popup()
+        app.show_progress = False
+    if not busy and app.proc_log:
+        imgui.same_line()
+        if th.button("Clear"):
+            app.proc_log = []
+            imgui.close_current_popup()
+            app.show_progress = False
+    imgui.end_popup()
+
+
+# ------------------------------------------------------------- recorder import
+def import_dialog(app):
+    pi = app.pending_import
+    r = _begin_modal("Recorder connected", bool(pi and pi.get("open")), 1000)
+    if r is None:
+        app.pending_import = None
+        return
+    if not r or not pi:
+        if r:
+            imgui.end_popup()
+        return
+    from ..cli import _fmt_dur, _fmt_size, human_flag
+    n_all = len(pi["cands"])
+    title(f"{n_all} new recording{'s' if n_all != 1 else ''} on the {pi['device'].name}")
+    th.small(f"{pi['mount']}  ·  mounted read-only. Nothing is copied until you press Import.")
+    imgui.dummy(imgui.ImVec2(0, 2))
+    tflags = (imgui.TableFlags_.sizing_stretch_prop | imgui.TableFlags_.borders_inner_h | imgui.TableFlags_.row_bg
+              | imgui.TableFlags_.scroll_y)
+    rows_h = min(420, 44 * (n_all + 1) + 6)
+    if imgui.begin_table("cands", 6, tflags, imgui.ImVec2(-1, rows_h)):
+        for name, weight in (("", 0.4), ("File", 3.0), ("Size", 1.0), ("Length", 1.0), ("Start", 2.4), ("Flags", 1.6)):
+            imgui.table_setup_column(name, imgui.TableColumnFlags_.width_stretch, weight)
+        imgui.table_setup_scroll_freeze(0, 1)
+        imgui.table_headers_row()
+        for i, cnd in enumerate(pi["cands"]):
+            imgui.table_next_row()
+            imgui.table_next_column()
+            _, pi["checked"][i] = imgui.checkbox(f"##c{i}", pi["checked"][i])
+            st = cnd.start
+            for v in (cnd.rel.split("/")[-1], _fmt_size(cnd.size), _fmt_dur(cnd.duration),
+                      f"{st.start:%Y-%m-%d %H:%M:%S} ({st.confidence})" if st else "?",
+                      ", ".join(human_flag(f) for f in st.flags) if st and st.flags else ""):
+                imgui.table_next_column()
+                imgui.text_wrapped(v)
+        imgui.end_table()
+    n = sum(pi["checked"])
+    size = sum(cnd.size for cnd, k in zip(pi["cands"], pi["checked"]) if k)
+    imgui.dummy(imgui.ImVec2(0, 4))
+    if not pi.get("done"):
+        if th.primary_button(f"Import {n} recording{'s' if n != 1 else ''} ({_fmt_size(size)})",
+                             disabled=app.importing or n == 0, why="Tick at least one recording"):
+            items = [cnd for cnd, k in zip(pi["cands"], pi["checked"]) if k]
+            threading.Thread(target=app.do_import, args=(items, pi["device"], pi["serial"]), daemon=True).start()
+            pi["done"] = True
+        imgui.same_line()
+        if th.button("Skip"):
+            app.pending_import = None
+            imgui.close_current_popup()
+    else:
+        if th.primary_button("Transcribe now", disabled=app.importing, why="Still copying"):
+            app.start_processing()
+            app.pending_import = None
+            imgui.close_current_popup()
+        imgui.same_line()
+        if th.button("Close"):
+            app.pending_import = None
+            imgui.close_current_popup()
+    if app.import_msg:
+        th.small(app.import_msg, "danger" if "failed" in app.import_msg else "text_dim")
+    imgui.end_popup()
