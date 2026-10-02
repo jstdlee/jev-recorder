@@ -369,3 +369,10 @@ fine if preferred, but it is heavier and its defaults are easier to get wrong.
   legal-hold flag.
 - **Formats that last:** MP3/FLAC/Opus + JSON + SQLite are all open. Export everything to
   plain files at any time (no lock-in).
+
+### 10.4 Decisions (2026-10-02)
+- Unlock: **password + printed recovery key**; auto-lock when idle.
+- Size: **lossless only**. MP3 originals stay untouched; WAV is stored as FLAC (verifiable
+  via the FLAC PCM MD5); the listening copy is Opus. No lossy silence tier.
+- Encryption tool: **age** proposed (Win/macOS/Linux binaries plus pyrage wheels; open
+  spec age-encryption.org/v1). Awaiting the user's final OK; GPG stays the alternative.
