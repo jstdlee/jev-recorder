@@ -57,6 +57,14 @@ Diarization runs in `.venv-nemo` (Transformers >= 5); see `src/jrec/diarize.py`.
   paused; other interrupted jobs come back failed, ready to retry.
 - **Help** (F1) has three tabs: Concepts, Glossary, and Shortcuts. The Shortcuts tab is generated from the same
   command list the palette uses.
+- **Timeline:**
+  - The waveform shows the conversation with its 10 min of raw padding (shaded), the speaker lanes, notes and
+    search matches.
+  - **Subtitles:** the line being spoken shows as a caption under the playhead, with the speaker's name in their
+    colour. When the transcript shows a translation, the caption shows it too. Right-click the timeline and
+    choose **Show subtitles** to turn them on or off.
+  - **A–B range** (Shift+drag, or [ and ]) shows in see-through orange on the timeline and the minimap.
+    Drag its edges or its top strip to change it. Repeat it, save it as a moment, or export it byte-exact.
 - **Themes:** System (follows the desktop), Light, Dark and Tokyo Night; Ctrl+Shift+T cycles through them.
 - **Languages:** English, 简体中文, 日本語 and 한국어. A switch applies at once, CJK glyphs included. Text from
   recordings is never translated by this setting.
@@ -64,6 +72,9 @@ Diarization runs in `.venv-nemo` (Transformers >= 5); see `src/jrec/diarize.py`.
 - **Dialogs** move by dragging any empty spot, remember where you left them, and stay inside the window.
   Double-click an empty spot to centre a dialog again. Every border between panes drags, and a double-click
   resets it. Ctrl+B hides the sidebar.
+- **Launch log:** `~/.cache/jrec/ui.log` (`%LOCALAPPDATA%\jrec\ui.log` on Windows) records each start, any crash,
+  and why the window closed: the title-bar close button, a quit request, or the desktop (window manager,
+  Alt+F4, logout).
 
 | Keys | Action |
 |---|---|
