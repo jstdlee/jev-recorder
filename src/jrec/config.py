@@ -80,25 +80,25 @@ class Config:
         """Save app-edited values for 'jev', 'analysis' or 'asr' into the override file."""
         p = self.llm_override_path
         try:
-            data = json.loads(p.read_text())
+            data = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             data = {}
         data.setdefault(section, {}).update(values)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, indent=1))
+        p.write_text(json.dumps(data, indent=1), encoding="utf-8")
         getattr(self, section).update(values)
 
     def save_llm(self, name, values, default=None):
         p = self.llm_override_path
         try:
-            data = json.loads(p.read_text())
+            data = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             data = {}
         data.setdefault("profiles", {}).setdefault(name, {}).update(values)
         if default:
             data["default"] = default
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, indent=1))
+        p.write_text(json.dumps(data, indent=1), encoding="utf-8")
         self.llm.setdefault("profiles", {}).setdefault(name, {}).update(values)
         if default:
             self.llm["default"] = default
@@ -121,7 +121,7 @@ class Config:
 
 def load(path=None):
     path = Path(path or os.environ.get("JREC_CONFIG") or config_dir() / "config.toml").expanduser()
-    data = tomllib.loads(path.read_text() if path.exists() else DEFAULT)
+    data = tomllib.loads(path.read_text(encoding="utf-8") if path.exists() else DEFAULT)
     devices = [Device(**d) for d in data.get("device", [])] or \
               [Device(**d) for d in tomllib.loads(DEFAULT)["device"]]
     llm = data.get("llm") or tomllib.loads(DEFAULT)["llm"]
@@ -130,7 +130,7 @@ def load(path=None):
                  {**base["jev"], **data.get("jev", {})}, {**base["analysis"], **data.get("analysis", {})},
                  {**base["asr"], **data.get("asr", {})})
     try:  # settings changed in the app win over the file
-        over = json.loads(cfg.llm_override_path.read_text())
+        over = json.loads(cfg.llm_override_path.read_text(encoding="utf-8"))
         for name, vals in over.get("profiles", {}).items():
             cfg.llm.setdefault("profiles", {}).setdefault(name, {}).update(vals)
         if over.get("default"):

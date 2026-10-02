@@ -272,19 +272,19 @@ def write_outputs(folder, segs, parts, meta):
         s["abs_end"] = clip_to_abs(s["end"], parts).isoformat(timespec="milliseconds")
         for w in s["words"]:
             w["abs"] = clip_to_abs(w["s"], parts).isoformat(timespec="milliseconds")
-    (folder / "transcript.json").write_text(json.dumps({**meta, "segments": segs}, ensure_ascii=False, indent=1))
+    (folder / "transcript.json").write_text(json.dumps({**meta, "segments": segs}, ensure_ascii=False, indent=1), encoding="utf-8")
     spk = lambda s: f"[{s['speaker']}] " if s["speaker"] else ""
-    with open(folder / "transcript.srt", "w") as f:
+    with open(folder / "transcript.srt", "w", encoding="utf-8") as f:
         for i, s in enumerate(segs, 1):
             f.write(f"{i}\n{_ts(s['start'])} --> {_ts(s['end'])}\n{spk(s)}{s['text']}\n\n")
-    with open(folder / "transcript.vtt", "w") as f:
+    with open(folder / "transcript.vtt", "w", encoding="utf-8") as f:
         f.write("WEBVTT\n\n")
         for s in segs:
             f.write(f"{_ts(s['start'], '.')} --> {_ts(s['end'], '.')}\n{spk(s)}{s['text']}\n\n")
-    with open(folder / "labels.txt", "w") as f:  # Audacity label track
+    with open(folder / "labels.txt", "w", encoding="utf-8") as f:  # Audacity label track
         for s in segs:
             f.write(f"{s['start']:.3f}\t{s['end']:.3f}\t{spk(s)}{s['text'][:80]}\n")
-    with open(folder / "transcript.md", "w") as f:
+    with open(folder / "transcript.md", "w", encoding="utf-8") as f:
         f.write(f"# {folder.name}\n\nlanguage: {meta['language'] or 'mixed'} {meta['language_counts']}\n\n")
         for s in segs:
             f.write(f"**{s['abs_start'][11:19]}** {spk(s)}{s['text']}\n\n")
@@ -305,7 +305,7 @@ def transcribe_folder(folder, engine, use_diarization=True, log=print, diarizer=
     progress(stage, done, total) is called as work advances (stages: asr, align, speakers)."""
     progress = progress or (lambda *a: None)
     folder = Path(folder)
-    m = json.loads((folder / "manifest.json").read_text())
+    m = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
     audio, parts = load_clip(folder, m)
     total = len(audio) / SR
     w0 = datetime.fromisoformat(m["window"]["start"])

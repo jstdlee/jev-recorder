@@ -41,7 +41,7 @@ def wait_cool(pause_c=PAUSE_C, resume_c=RESUME_C, log=print, sleep=time.sleep, r
 def gpu_lock(library, log=print):
     """One GPU job per library at a time, across processes (UI windows, watch, CLI)."""
     library.mkdir(parents=True, exist_ok=True)
-    with open(library / ".gpu.lock", "w") as f:
+    with open(library / ".gpu.lock", "w", encoding="utf-8") as f:
         if fcntl is None:
             try:
                 msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)

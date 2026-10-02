@@ -41,5 +41,5 @@ def card(tmp_path):
 @pytest.fixture
 def cfg(tmp_path):
     p = tmp_path / "config.toml"
-    p.write_text(config.DEFAULT.replace('library = "~/jrec-library"', f'library = "{tmp_path / "lib"}"'))
+    p.write_text(config.DEFAULT.replace('library = "~/jrec-library"', f'library = "{(tmp_path / "lib").as_posix()}"'), encoding="utf-8")
     return config.load(p)

@@ -43,5 +43,5 @@ def export_range(manifest, archive, out_root, a, b, label=""):
          "note": "Byte-exact ranges of the archived original recording(s); not re-encoded. "
                  "Run each 'verify' command in the library folder: its hash must equal 'sha256'.",
          "created": datetime.now().astimezone().isoformat(timespec="seconds")}
-    (out / "manifest.json").write_text(json.dumps(m, indent=1, ensure_ascii=False))
+    (out / "manifest.json").write_text(json.dumps(m, indent=1, ensure_ascii=False), encoding="utf-8")
     return out

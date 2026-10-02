@@ -46,13 +46,13 @@ def test_dominant_language_is_forced_and_outputs_written(tmp_path):
     assert segs and all(s["speaker"] == "S1" for s in segs)
     assert segs[0]["text"].startswith("Hello there, team.")  # punctuation kept from ASR text
     # absolute time = window start + clip offset
-    w0 = datetime.fromisoformat(json.loads((folder / "manifest.json").read_text())["window"]["start"])
-    first = json.loads((folder / "transcript.json").read_text())["chunks"][0]
+    w0 = datetime.fromisoformat(json.loads((folder / "manifest.json").read_text(encoding="utf-8"))["window"]["start"])
+    first = json.loads((folder / "transcript.json").read_text(encoding="utf-8"))["chunks"][0]
     got = (datetime.fromisoformat(segs[0]["abs_start"]) - w0).total_seconds()
     assert abs(got - (first[0] + 1.0)) < 0.002  # ISO output has ms resolution
     for name in ("transcript.json", "transcript.srt", "transcript.vtt", "transcript.md", "labels.txt"):
         assert (folder / name).stat().st_size > 0
-    assert "[S1] Hello there, team." in (folder / "transcript.srt").read_text()
+    assert "[S1] Hello there, team." in (folder / "transcript.srt").read_text(encoding="utf-8")
 
 
 def test_mixed_languages_are_not_forced_and_malay_uses_mms(tmp_path):
@@ -64,7 +64,7 @@ def test_mixed_languages_are_not_forced_and_malay_uses_mms(tmp_path):
     assert langs == {"English", "Malay"}
     malay = next(s for s in segs if s["lang"] == "Malay")
     assert malay["text"] == "Selamat pagi, semua." and malay["speaker"] is None
-    meta = json.loads((folder / "transcript.json").read_text())
+    meta = json.loads((folder / "transcript.json").read_text(encoding="utf-8"))
     assert meta["language"] is None and meta["language_counts"] == {"English": 2, "Malay": 1} or meta["language_counts"]
 
 
@@ -84,7 +84,7 @@ def test_listen_track_is_separate_and_manifest_untouched(tmp_path):
     before = (folder / "manifest.json").read_bytes()
     out = enhance.make_listen_track(folder)
     assert out.stat().st_size > 0 and (folder / "manifest.json").read_bytes() == before
-    info = json.loads((folder / "listen.json").read_text())
+    info = json.loads((folder / "listen.json").read_text(encoding="utf-8"))
     assert info["from_parts"] == ["raw_01.mp3"] and "listening only" in info["purpose"]
 
 

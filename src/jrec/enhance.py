@@ -26,14 +26,14 @@ def deep_filter_bin():
 
 def make_listen_track(folder, atten_db=ATTEN_DB, bitrate="32k"):
     folder = Path(folder)
-    m = json.loads((folder / "manifest.json").read_text())
+    m = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
     df = deep_filter_bin()
     if df is None:
         raise FileNotFoundError("deep-filter binary not found (set JREC_DEEP_FILTER)")
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         concat = td / "list.txt"
-        concat.write_text("".join(f"file '{(folder / p['file']).resolve()}'\n" for p in m["parts"]))
+        concat.write_text("".join(f"file '{(folder / p['file']).resolve()}'\n" for p in m["parts"]), encoding="utf-8")
         src = td / "in.wav"
         subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(concat),
                         "-ac", "1", "-ar", "48000", str(src)], check=True)
@@ -46,5 +46,5 @@ def make_listen_track(folder, atten_db=ATTEN_DB, bitrate="32k"):
             "from_parts": [p["file"] for p in m["parts"]],
             "steps": [f"DeepFilterNet3 deep-filter -D -a {atten_db}", f"ffmpeg {LOUDNORM}", f"libopus {bitrate} mono 48k"],
             "created": datetime.now().astimezone().isoformat(timespec="seconds")}
-    (folder / "listen.json").write_text(json.dumps(info, indent=1))
+    (folder / "listen.json").write_text(json.dumps(info, indent=1), encoding="utf-8")
     return out

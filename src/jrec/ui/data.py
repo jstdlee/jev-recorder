@@ -18,7 +18,7 @@ class Conversation:
         self.name = self.folder.name
         self.status = row["status"]
         self.speech_start = datetime.fromisoformat(row["speech_start"])
-        self.manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.manifest = json.loads((self.folder / "manifest.json").read_text(encoding="utf-8"))
         w = self.manifest["window"]
         self.start = datetime.fromisoformat(w["start"])
         self.end = datetime.fromisoformat(w["end"])
@@ -35,13 +35,13 @@ class Conversation:
     def reload(self, con):
         t = self.folder / "transcript.json"
         if t.exists():
-            self.segments = json.loads(t.read_text())["segments"]
+            self.segments = json.loads(t.read_text(encoding="utf-8"))["segments"]
             for s in self.segments:
                 s["_t0"] = (datetime.fromisoformat(s["abs_start"]) - self.start).total_seconds()
                 s["_t1"] = (datetime.fromisoformat(s["abs_end"]) - self.start).total_seconds()
         self.summary = db.get_summary(con, self.name)
         if self.summary is None and (self.folder / "summary.json").exists():
-            self.summary = json.loads((self.folder / "summary.json").read_text())
+            self.summary = json.loads((self.folder / "summary.json").read_text(encoding="utf-8"))
         self.title = (self.summary or {}).get("title") or (self.segments[0]["text"][:60] if self.segments else None)
         self.notes = db.notes(con, self.name)
         self.names = db.speaker_names(con, self.name)

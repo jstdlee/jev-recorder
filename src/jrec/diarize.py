@@ -21,7 +21,7 @@ def run(wav_path, out_json):
     """Called from the main process: diarize wav_path in the diarization venv."""
     subprocess.run([python_for_diarization(), "-m", "jrec.diarize", str(wav_path), str(out_json)], check=True,
                    env=dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1])))
-    return json.loads(Path(out_json).read_text())
+    return json.loads(Path(out_json).read_text(encoding="utf-8"))
 
 
 def _main(wav, out):
@@ -36,7 +36,7 @@ def _main(wav, out):
         logits = model(**inputs).logits
     segs = proc.extract_speaker_dict(logits, inputs.attention_mask)[0]
     Path(out).write_text(json.dumps([{"start": float(s["Start"]), "end": float(s["End"]),
-                                      "speaker": f"S{int(s['Speaker']) + 1}"} for s in segs]))
+                                      "speaker": f"S{int(s['Speaker']) + 1}"} for s in segs]), encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -118,7 +118,7 @@ class TaskQueue:
     # ---------------------------------------------------------- persistence
     def _load(self):
         try:
-            data = json.loads(self.path.read_text())
+            data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
         for d in data.get("tasks", []):
@@ -135,7 +135,7 @@ class TaskQueue:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             keep = [t for t in self.tasks if t.state in ACTIVE] + [t for t in self.tasks if t.state in FINISHED][-30:]
-            self.path.write_text(json.dumps({"tasks": [t.to_json() for t in keep]}, ensure_ascii=False, indent=1))
+            self.path.write_text(json.dumps({"tasks": [t.to_json() for t in keep]}, ensure_ascii=False, indent=1), encoding="utf-8")
         except OSError:
             pass
 
@@ -192,7 +192,7 @@ class TaskQueue:
         try:
             t.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                       encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, close_fds=True,
-                                      cwd=str(Path.home()), **kw)
+                                      cwd=str(Path.home()), env={**os.environ, "PYTHONIOENCODING": "utf-8"}, **kw)
         except OSError as e:
             t.state, t.error = "failed", str(e)
             self.on_log("error", f"{t.label}: {e}")

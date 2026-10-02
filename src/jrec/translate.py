@@ -35,7 +35,7 @@ def batches(indices, segs, size):
 
 def translate_folder(folder, to, profile, con, rows=None, progress=None):
     folder = Path(folder)
-    segs = json.loads((folder / "transcript.json").read_text())["segments"]
+    segs = json.loads((folder / "transcript.json").read_text(encoding="utf-8"))["segments"]
     have = db.translations(con, folder.name, to, segs)
     todo = [i for i in (rows if rows is not None else range(len(segs))) if i not in have and segs[i]["text"].strip()]
     groups = batches(todo, segs, int(profile.get("translate_chars", BATCH_CHARS)))

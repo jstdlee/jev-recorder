@@ -140,14 +140,14 @@ def cut_stream(stream, out_root, pad=segment.PAD, gap=segment.GAP, min_speech=se
                                                           for a, b in regions if b > c0 and a < c1]},
             "created": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
-        (folder / "manifest.json").write_text(json.dumps(m, indent=1, ensure_ascii=False))
+        (folder / "manifest.json").write_text(json.dumps(m, indent=1, ensure_ascii=False), encoding="utf-8")
         manifests.append(m)
     return manifests
 
 
 def verify_folder(folder, archive):
     """Re-check every part: clip hash, and the clip bytes against the archived original."""
-    m = json.loads((Path(folder) / "manifest.json").read_text())
+    m = json.loads((Path(folder) / "manifest.json").read_text(encoding="utf-8"))
     problems = []
     for p in m["parts"]:
         clip = (Path(folder) / p["file"]).read_bytes()

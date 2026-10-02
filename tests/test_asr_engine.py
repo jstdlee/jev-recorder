@@ -46,7 +46,7 @@ def test_fixed_language_skips_detection_and_forced_language_maps_to_iso():
 
 def test_asr_section_defaults_and_app_override(tmp_path):
     p = tmp_path / "config.toml"
-    p.write_text('library = "%s"\n' % tmp_path)
+    p.write_text('library = "%s"\n' % tmp_path.as_posix(), encoding="utf-8")
     cfg = config.load(p)
     assert cfg.asr == {"engine": "qwen", "language": "auto"}
     cfg.save_section("asr", {"engine": "cohere"})

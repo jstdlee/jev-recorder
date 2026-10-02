@@ -216,7 +216,7 @@ def jev_check(intel, segs, jev):
 # ---------------------------------------------------------------- run
 def analyze_folder(folder, engine, profile, jev, con, progress=None):
     folder = Path(folder)
-    segs = json.loads((folder / "transcript.json").read_text())["segments"]
+    segs = json.loads((folder / "transcript.json").read_text(encoding="utf-8"))["segments"]
     intel = {"rules": rules_extract(segs)}
     if engine in ("llm", "check"):
         intel.update(llm_extract(segs, profile, progress))
@@ -230,6 +230,6 @@ def analyze_folder(folder, engine, profile, jev, con, progress=None):
     intel["_meta"] = {"engine": engine, "llm": profile.get("model") if engine in ("llm", "check") else None,
                       "jev": jev.get("model") if engine in ("jev", "check") else None,
                       "created": datetime.now().astimezone().isoformat(timespec="seconds")}
-    (folder / "insights.json").write_text(json.dumps(intel, ensure_ascii=False, indent=1))
+    (folder / "insights.json").write_text(json.dumps(intel, ensure_ascii=False, indent=1), encoding="utf-8")
     db.save_insight(con, folder.name, intel, engine)
     return intel

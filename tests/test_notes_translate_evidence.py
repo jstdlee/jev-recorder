@@ -35,13 +35,13 @@ def test_notes_crud(tmp_path):
 
 def test_llm_settings_saved_by_app_override_file(tmp_path):
     p = tmp_path / "config.toml"
-    p.write_text(config.DEFAULT)
+    p.write_text(config.DEFAULT, encoding="utf-8")
     cfg = config.load(p)
     cfg.save_llm("local", {"base_url": "http://127.0.0.1:9999/v1", "model": "qwen3.8", "chunk_chars": 128000})
     again = config.load(p)
     prof = again.llm_profile()
     assert prof["base_url"] == "http://127.0.0.1:9999/v1" and prof["chunk_chars"] == 128000
-    assert "chunk_chars = 256000" in p.read_text()   # the TOML file itself is not rewritten
+    assert "chunk_chars = 256000" in p.read_text(encoding="utf-8")   # the TOML file itself is not rewritten
 
 
 def _conv(tmp_path):
@@ -56,7 +56,7 @@ def _conv(tmp_path):
     segs = [{"start": 10 + i, "end": 11 + i, "abs_start": f"2025-10-01T09:00:{20 + i:02d}.000+08:00",
              "abs_end": f"2025-10-01T09:00:{21 + i:02d}.000+08:00", "speaker": "S1", "lang": "Chinese",
              "text": f"第{i}句话。", "words": []} for i in range(5)]
-    (folder / "transcript.json").write_text(json.dumps({"segments": segs}, ensure_ascii=False))
+    (folder / "transcript.json").write_text(json.dumps({"segments": segs}, ensure_ascii=False), encoding="utf-8")
     return folder, arch
 
 
@@ -76,7 +76,7 @@ def test_translate_batches_with_context_and_staleness(tmp_path):
     assert out == {i: f"Sentence {i}." for i in range(5)}
     assert len(_Fake.seen) >= 2 and "CONTEXT:" in _Fake.seen[1][1]["messages"][1]["content"]
     # re-transcribed row: its old translation is no longer returned
-    segs = json.loads((folder / "transcript.json").read_text())["segments"]
+    segs = json.loads((folder / "transcript.json").read_text(encoding="utf-8"))["segments"]
     segs[2]["text"] = "改了。"
     assert 2 not in db.translations(con, folder.name, "English", segs)
 
@@ -106,10 +106,10 @@ def test_nothing_touches_the_evidence(tmp_path):
 def test_export_excerpt_is_byte_exact_and_library_untouched(tmp_path):
     from jrec import export
     folder, arch = _conv(tmp_path)
-    m = json.loads((folder / "manifest.json").read_text())
+    m = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
     before = {p.name: _sha(p) for p in list(arch.iterdir()) + list(folder.iterdir()) if p.is_file()}
     out = export.export_range(m, arch, tmp_path / "exports", 5.0, 12.0, "promise")
-    em = json.loads((out / "manifest.json").read_text())
+    em = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
     (p,) = em["parts"]
     data = (arch / f"{p['source_sha256']}.mp3").read_bytes()
     assert (out / p["file"]).read_bytes() == data[p["byte_start"]:p["byte_end"]]

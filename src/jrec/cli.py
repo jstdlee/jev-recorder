@@ -279,7 +279,7 @@ def cmd_resegment(cfg, a):
                                                con.execute("SELECT folder FROM conversation WHERE status!='cut'")]
     for f in folders:
         tp = f / "transcript.json"
-        t = json.loads(tp.read_text())
+        t = json.loads(tp.read_text(encoding="utf-8"))
         old = t["segments"]
         new = transcribe.merge_fragments(old)
         if len(new) == len(old):
@@ -297,7 +297,7 @@ def cmd_resegment(cfg, a):
         for seg, name in moved.items():
             db.set_row_speaker(con, f.name, seg, name)
         t["segments"] = new
-        tp.write_text(json.dumps(t, ensure_ascii=False, indent=1))
+        tp.write_text(json.dumps(t, ensure_ascii=False, indent=1), encoding="utf-8")
         search.index_transcript(con, f)
         print(f"{f.name}: {len(old)} -> {len(new)} rows (backup {backup.name})")
 
@@ -332,7 +332,7 @@ def cmd_ui(cfg, a):
     from .paths import cache_dir
     log_path = cache_dir() / "ui.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log = open(log_path, "a", buffering=1)
+    log = open(log_path, "a", buffering=1, encoding="utf-8")
     faulthandler.enable(log)
     log.write(f"\n{_t.strftime('%F %T')} start pid={os.getpid()} DISPLAY={os.environ.get('DISPLAY')} "
               f"WAYLAND={os.environ.get('WAYLAND_DISPLAY')} tty={sys.stdin.isatty()}\n")
@@ -347,6 +347,11 @@ def cmd_ui(cfg, a):
 
 
 def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):      # Windows consoles and pipes default to a legacy code page
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(prog="jrec", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config")
     sub = ap.add_subparsers(dest="cmd", required=True)

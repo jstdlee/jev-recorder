@@ -71,7 +71,7 @@ def _fake(path, body):
 def test_llm_jev_and_check_engines(tmp_path):
     f = tmp_path / "conv"
     f.mkdir()
-    (f / "transcript.json").write_text(json.dumps({"segments": SEGS}, ensure_ascii=False))
+    (f / "transcript.json").write_text(json.dumps({"segments": SEGS}, ensure_ascii=False), encoding="utf-8")
     con = db.connect(tmp_path / "j.sqlite")
     srv, url = _serve(_fake)
     prof = {"base_url": url + "/v1", "model": "m"}

@@ -30,7 +30,7 @@ class Candidate:
 def mount_points():
     """Mounted filesystems as {mountpoint: device}, from /proc/mounts."""
     out = {}
-    for line in Path("/proc/mounts").read_text().splitlines():
+    for line in Path("/proc/mounts").read_text(encoding="utf-8").splitlines():
         dev, mnt = line.split()[:2]
         out[mnt.replace("\\040", " ")] = dev
     return out

@@ -91,7 +91,7 @@ def _cite(refs, segs):
 
 def summarize_folder(folder, profile, con=None, progress=None):
     folder = Path(folder)
-    t = json.loads((folder / "transcript.json").read_text())
+    t = json.loads((folder / "transcript.json").read_text(encoding="utf-8"))
     segs = t["segments"]
     d = summarize_segments(segs, profile, progress)
     for k in ("key_points", "action_items"):
@@ -99,7 +99,7 @@ def summarize_folder(folder, profile, con=None, progress=None):
             item["times"] = _cite(item.get("refs"), segs)
     d["_meta"] = {"model": profile["model"], "endpoint": profile["base_url"],
                   "created": datetime.now().astimezone().isoformat(timespec="seconds")}
-    (folder / "summary.json").write_text(json.dumps(d, ensure_ascii=False, indent=1))
+    (folder / "summary.json").write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
     if con is not None:
         db.save_summary(con, folder.name, d, profile["model"])
     md = [f"# {d['title']}", "", d["summary"], "", "## Key points"]
@@ -109,5 +109,5 @@ def summarize_folder(folder, profile, con=None, progress=None):
         md += [f"- [ ] {a['text']}" + (f" — {a['owner']}" if a.get("owner") else "") +
                (f" (due {a['due']})" if a.get("due") else "") + f" ({', '.join(a['times'])})" for a in d["action_items"]]
     md += ["", f"_Summarised by {profile['model']}; times link to transcript lines._"]
-    (folder / "summary.md").write_text("\n".join(md) + "\n")
+    (folder / "summary.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     return d

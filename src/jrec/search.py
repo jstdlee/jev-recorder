@@ -21,7 +21,7 @@ def ensure(con):
 def index_transcript(con, folder):
     ensure(con)
     folder = Path(folder)
-    t = json.loads((folder / "transcript.json").read_text())
+    t = json.loads((folder / "transcript.json").read_text(encoding="utf-8"))
     con.execute("DELETE FROM seg_fts WHERE folder = ?", (folder.name,))
     con.executemany("INSERT INTO seg_fts (text, folder, abs_start, speaker, lang) VALUES (?,?,?,?,?)",
                     [(s["text"], folder.name, s["abs_start"], s.get("speaker"), s.get("lang")) for s in t["segments"]])

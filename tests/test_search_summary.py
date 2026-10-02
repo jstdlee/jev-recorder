@@ -14,7 +14,7 @@ SEGS = [
 def _folder(tmp_path, segs=SEGS):
     f = tmp_path / "2025-10-01_092531_abcd"
     f.mkdir()
-    (f / "transcript.json").write_text(json.dumps({"segments": segs}, ensure_ascii=False))
+    (f / "transcript.json").write_text(json.dumps({"segments": segs}, ensure_ascii=False), encoding="utf-8")
     return f
 
 
@@ -69,7 +69,7 @@ def test_summary_retries_bad_json_strips_think_and_cites_times(tmp_path, monkeyp
     assert _Fake.seen[0][2] == "Bearer sk-test"
     assert "[0] 09:25:31 S1: 我们下周三开会讨论预算。" in _Fake.seen[0][1]["messages"][1]["content"]
     assert d["key_points"][0]["times"] == ["09:25:31"] and d["action_items"][0]["times"] == ["09:25:40"]
-    md = (f / "summary.md").read_text()
+    md = (f / "summary.md").read_text(encoding="utf-8")
     assert md.startswith("# 预算会议安排") and "- [ ] Send budget sheet — S2 (due Friday) (09:25:40)" in md
 
 

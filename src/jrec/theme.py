@@ -87,7 +87,7 @@ def U(name, a=1.0):
 
 def load_prefs():
     try:
-        return {**DEFAULT_PREFS, **json.loads(PREFS_PATH.read_text())}
+        return {**DEFAULT_PREFS, **json.loads(PREFS_PATH.read_text(encoding="utf-8"))}
     except (OSError, ValueError):
         return dict(DEFAULT_PREFS)
 
@@ -95,7 +95,7 @@ def load_prefs():
 def save_prefs(p):
     try:
         PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        PREFS_PATH.write_text(json.dumps(p, indent=1))
+        PREFS_PATH.write_text(json.dumps(p, indent=1), encoding="utf-8")
     except OSError:
         pass
 
