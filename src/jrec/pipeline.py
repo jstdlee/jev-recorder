@@ -14,7 +14,7 @@ def llm_reachable(profile, timeout=3):
 
 
 def process_all(cfg, diarization=True, log=print):
-    from . import cutter, enhance, search, summarize, transcribe
+    from . import cutter
     from .cli import _sources
     con = db.connect(cfg.db_path)
     out = cfg.library / "conversations"
@@ -32,16 +32,26 @@ def process_all(cfg, diarization=True, log=print):
     # 2. transcribe (GPU), newest conversations first so recent talk is searchable soonest
     todo = [r["folder"] for r in con.execute("SELECT folder FROM conversation WHERE status='cut' ORDER BY speech_start DESC")]
     if todo:
-        engine = transcribe.Engine()
-        for name in todo:
-            thermal.wait_cool(log=log)
-            f = out / name
-            transcribe.transcribe_folder(f, engine, use_diarization=diarization, log=log)
-            search.index_transcript(con, f)
-            con.execute("UPDATE conversation SET status='transcribed' WHERE folder=?", (name,))
-            con.commit()
-            log(f"transcribed {name}")
-        del engine
+        with thermal.gpu_lock(cfg.library, log=log):
+            _transcribe_all(cfg, con, out, todo, diarization, log)
+    _post(cfg, con, out, log)
+
+
+def _transcribe_all(cfg, con, out, todo, diarization, log):
+    from . import search, transcribe
+    engine = transcribe.Engine()
+    for name in todo:
+        thermal.wait_cool(log=log)
+        f = out / name
+        transcribe.transcribe_folder(f, engine, use_diarization=diarization, log=log)
+        search.index_transcript(con, f)
+        con.execute("UPDATE conversation SET status='transcribed' WHERE folder=?", (name,))
+        con.commit()
+        log(f"transcribed {name}")
+
+
+def _post(cfg, con, out, log):
+    from . import enhance, summarize
     # 3. listening tracks (CPU)
     if enhance.deep_filter_bin():
         for f in sorted(out.glob("*/")):

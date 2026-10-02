@@ -190,6 +190,12 @@ def cmd_transcribe(cfg, a):
     if not folders:
         print("nothing to transcribe")
         return
+    with thermal.gpu_lock(cfg.library):
+        _transcribe_folders(cfg, con, folders, a)
+
+
+def _transcribe_folders(cfg, con, folders, a):
+    from . import search, thermal, transcribe
     engine = transcribe.Engine()
     for i, f in enumerate(folders, 1):
         print(f"[{i}/{len(folders)}] {f.name}", flush=True)
