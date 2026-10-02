@@ -73,3 +73,16 @@ def test_pick_chunks_covers_speech_span_and_skips_silent_padding():
     assert cs[0][0] < 600 + 1 and cs[-1][1] >= 760
     assert all(b - a <= 30 for a, b in cs)
     assert all(b > 599 and a < 761 for a, b in cs)  # no chunks in the silent 10 min pads
+
+
+def test_listen_track_is_separate_and_manifest_untouched(tmp_path):
+    import pytest
+    from jrec import enhance
+    if enhance.deep_filter_bin() is None:
+        pytest.skip("deep-filter binary not installed")
+    folder, _ = _conversation(tmp_path, seconds=40)
+    before = (folder / "manifest.json").read_bytes()
+    out = enhance.make_listen_track(folder)
+    assert out.stat().st_size > 0 and (folder / "manifest.json").read_bytes() == before
+    info = json.loads((folder / "listen.json").read_text())
+    assert info["from_parts"] == ["raw_01.mp3"] and "listening only" in info["purpose"]

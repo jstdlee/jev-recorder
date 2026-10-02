@@ -9,6 +9,10 @@
   jrec verify [FOLDER ...]           re-check clip hashes against the archived originals
   jrec transcribe [FOLDER ...] [--no-diarization]
                                      Qwen3-ASR-1.7B + word times + speakers -> transcript.{json,srt,vtt,md}
+  jrec enhance [FOLDER ...]          listening track listen.opus (DeepFilterNet3, CPU)
+  jrec summarize [FOLDER ...] [--llm PROFILE]
+                                     title/summary/points/actions with clock-time citations
+  jrec search QUERY                  full-text search over all transcripts
 """
 import argparse
 import json
@@ -164,7 +168,7 @@ def cmd_verify(cfg, a):
 
 
 def cmd_transcribe(cfg, a):
-    from . import transcribe
+    from . import search, transcribe
     con = db.connect(cfg.db_path)
     if a.folders:
         folders = [Path(f) for f in a.folders]
@@ -178,9 +182,44 @@ def cmd_transcribe(cfg, a):
     for i, f in enumerate(folders, 1):
         print(f"[{i}/{len(folders)}] {f.name}", flush=True)
         segs = transcribe.transcribe_folder(f, engine, use_diarization=not a.no_diarization)
+        search.index_transcript(con, f)
         con.execute("UPDATE conversation SET status='transcribed' WHERE folder=?", (f.name,))
         con.commit()
         print(f"  {len(segs)} segments, {len({s['speaker'] for s in segs if s['speaker']})} speakers -> {f}/transcript.md")
+
+
+def cmd_enhance(cfg, a):
+    from . import enhance
+    folders = [Path(f) for f in a.folders] or [f for f in sorted((cfg.library / "conversations").glob("*/"))
+                                               if not (f / "listen.opus").exists()]
+    for i, f in enumerate(folders, 1):
+        print(f"[{i}/{len(folders)}] {f.name} -> {enhance.make_listen_track(f).name}", flush=True)
+    if not folders:
+        print("nothing to enhance")
+
+
+def cmd_summarize(cfg, a):
+    from . import summarize
+    con = db.connect(cfg.db_path)
+    prof = cfg.llm_profile(a.llm)
+    folders = [Path(f) for f in a.folders] or [cfg.library / "conversations" / r["folder"] for r in
+                                               con.execute("SELECT folder FROM conversation WHERE status='transcribed'")]
+    for i, f in enumerate(folders, 1):
+        d = summarize.summarize_folder(f, prof)
+        con.execute("UPDATE conversation SET status='summarized' WHERE folder=?", (f.name,))
+        con.commit()
+        print(f"[{i}/{len(folders)}] {f.name}: {d['title']}")
+    if not folders:
+        print("nothing to summarize")
+
+
+def cmd_search(cfg, a):
+    from . import search
+    con = db.connect(cfg.db_path)
+    hits = search.search(con, a.query)
+    for h in hits:
+        print(f"{h['abs_start'][:19].replace('T', ' ')}  {h['folder']}  [{h['speaker'] or '?'}] {h['text']}")
+    print(f"{len(hits)} hit(s)")
 
 
 def main(argv=None):
@@ -197,10 +236,14 @@ def main(argv=None):
     v = sub.add_parser("verify"); v.add_argument("folders", nargs="*")
     t = sub.add_parser("transcribe"); t.add_argument("folders", nargs="*")
     t.add_argument("--no-diarization", action="store_true")
+    e = sub.add_parser("enhance"); e.add_argument("folders", nargs="*")
+    sm = sub.add_parser("summarize"); sm.add_argument("folders", nargs="*"); sm.add_argument("--llm")
+    q = sub.add_parser("search"); q.add_argument("query")
     a = ap.parse_args(argv)
     cfg = config.load(a.config)
     {"devices": cmd_devices, "scan": cmd_scan, "import": cmd_import, "sources": cmd_sources,
-     "cut": cmd_cut, "verify": cmd_verify, "transcribe": cmd_transcribe}[a.cmd](cfg, a)
+     "cut": cmd_cut, "verify": cmd_verify, "transcribe": cmd_transcribe,
+     "enhance": cmd_enhance, "summarize": cmd_summarize, "search": cmd_search}[a.cmd](cfg, a)
 
 
 if __name__ == "__main__":
