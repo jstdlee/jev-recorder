@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS tag (           -- labels on talks ('conversation') a
   kind TEXT NOT NULL, target TEXT NOT NULL, tag TEXT NOT NULL, created TEXT NOT NULL,
   PRIMARY KEY (kind, target, tag)
 );
+CREATE TABLE IF NOT EXISTS tag_def (       -- tags you created, even before they are used
+  tag TEXT PRIMARY KEY, created TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS moment (        -- saved A-B ranges
   id INTEGER PRIMARY KEY, folder TEXT NOT NULL, a REAL NOT NULL, b REAL NOT NULL,
   abs_a TEXT NOT NULL, abs_b TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL
@@ -248,5 +251,42 @@ def tags_for(con, kind, target):
 
 
 def all_tags(con):
-    """{tag: count} over talks and recordings."""
-    return {r[0]: r[1] for r in con.execute("SELECT tag, COUNT(*) FROM tag GROUP BY tag ORDER BY COUNT(*) DESC, tag")}
+    """{tag: count} over talks and recordings, including created-but-unused tags (count 0)."""
+    out = {r[0]: r[1] for r in con.execute("SELECT tag, COUNT(*) FROM tag GROUP BY tag ORDER BY COUNT(*) DESC, tag")}
+    for (t,) in con.execute("SELECT tag FROM tag_def ORDER BY tag"):
+        out.setdefault(t, 0)
+    return out
+
+
+def create_tag(con, tag):
+    tag = " ".join(tag.split()).strip("#, ")
+    if tag:
+        con.execute("INSERT OR IGNORE INTO tag_def VALUES (?,?)", (tag, now()))
+        con.commit()
+    return tag
+
+
+def tag_usage(con, tag):
+    """[(kind, target)] where the tag is used."""
+    return [(r[0], r[1]) for r in con.execute("SELECT kind, target FROM tag WHERE tag=? ORDER BY kind, target", (tag,))]
+
+
+def rename_tag(con, old, new):
+    """Rename everywhere; renaming onto an existing tag merges them."""
+    new = " ".join(new.split()).strip("#, ")
+    if not new or new == old:
+        return old
+    con.execute("INSERT OR IGNORE INTO tag (kind, target, tag, created) SELECT kind, target, ?, created FROM tag WHERE tag=?",
+                (new, old))
+    con.execute("DELETE FROM tag WHERE tag=?", (old,))
+    if con.execute("SELECT 1 FROM tag_def WHERE tag=?", (old,)).fetchone():
+        con.execute("INSERT OR IGNORE INTO tag_def VALUES (?,?)", (new, now()))
+        con.execute("DELETE FROM tag_def WHERE tag=?", (old,))
+    con.commit()
+    return new
+
+
+def delete_tag(con, tag):
+    con.execute("DELETE FROM tag WHERE tag=?", (tag,))
+    con.execute("DELETE FROM tag_def WHERE tag=?", (tag,))
+    con.commit()

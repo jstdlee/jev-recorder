@@ -83,6 +83,7 @@ class App:
         self._cache, self.cache_dirty = {}, False
         self.right_tab = "insights"
         self.tag_filter, self.tag_buf, self.settings_palette = set(), "", False
+        self.new_tag, self.tag_edit, self.tag_open = "", None, None
         self.view_tw, self._view_written = None, None
         self.progress_glide = anim.Glide()
         # recorder import
@@ -478,7 +479,9 @@ class App:
         h = imgui.get_frame_height() + 10
         w = imgui.get_content_region_avail().x
         p = imgui.get_cursor_screen_pos()
-        # empty space of the bar moves the window; double-click maximizes
+        # empty space of the bar moves the window; double-click maximizes. Allow overlap so the icons
+        # and the task chip drawn on top of it get their clicks.
+        imgui.set_next_item_allow_overlap()
         imgui.invisible_button("titlebar_drag", imgui.ImVec2(w, h))
         if imgui.is_item_activated() and window.available():
             window.drag_begin()
@@ -599,11 +602,17 @@ class App:
                      why="A job is already running" if self.job_busy else "Everything is transcribed"):
             self.start_processing()
         imgui.dummy(imgui.ImVec2(0, 2))
-        _, self.side_tab = th.seg("sidetab", self.side_tab, ["conv", "people", "rec", "moments"],
-                                  ["Talks", "People", "Recordings", "Moments"],
+        avail_w = imgui.get_content_region_avail().x
+        names = ["Talks", "People", "Files", "Moments", "Tags"]
+        icons_ = [th.ICON_TALKS, th.ICON_PEOPLE, th.ICON_FILES, th.ICON_MOMENTS, th.ICON_TAGS]
+        with_text = [f"{i} {n}" for i, n in zip(icons_, names)]
+        labels = with_text if th.seg_width(with_text) <= avail_w else names if th.seg_width(names) <= avail_w else icons_
+        _, self.side_tab = th.seg("sidetab", self.side_tab, ["conv", "people", "rec", "moments", "tags"], labels,
                                   ["Conversations, newest first", "Everyone you have named, and where they speak",
                                    "Original recordings from the recorder (read-only archive)",
-                                   "Your notes and saved A–B stretches"])
+                                   "Your notes and saved A–B stretches",
+                                   "Create, rename, merge and delete tags; see where each is used"],
+                                  fill=avail_w)
         imgui.dummy(imgui.ImVec2(0, 2))
         imgui.begin_child("list", imgui.ImVec2(0, 0), 0)
         if self.hits is not None:
@@ -614,6 +623,8 @@ class App:
             self.side_recordings()
         elif self.side_tab == "moments":
             self.side_moments()
+        elif self.side_tab == "tags":
+            self.side_tags()
         else:
             self.side_conversations()
         imgui.end_child()
@@ -753,6 +764,100 @@ class App:
                 if not convs:
                     th.small("No conversation found in this recording (only silence or noise).")
                 imgui.unindent(10)
+
+    def side_tags(self):
+        """Tag management: create, rename (onto an existing name = merge), delete, see usage, filter talks."""
+        imgui.set_next_item_width(imgui.get_content_region_avail().x - 60)
+        enter, self.new_tag = imgui.input_text_with_hint("##newtag", "New tag, e.g. 家庭 or roof", self.new_tag,
+                                                         imgui.InputTextFlags_.enter_returns_true)
+        imgui.same_line(0, 4)
+        if (imgui.button("Add") or enter) and self.new_tag.strip():
+            db.create_tag(self.con, self.new_tag)
+            self.new_tag, self._cache = "", {}
+        tags = self.cached("all_tags", lambda: db.all_tags(self.con))
+        if not tags:
+            th.small("No tags yet. Add one here, or with + tag on a talk.")
+            return
+        th.section(f"{len(tags)} tag{'s' if len(tags) != 1 else ''}")
+        by_name = {c.name: c for c in self.convs}
+        for k, (tag, n) in enumerate(tags.items()):
+            imgui.push_id(f"tg{k}")
+            editing = self.tag_edit is not None and self.tag_edit[0] == tag
+            if editing:
+                imgui.set_next_item_width(imgui.get_content_region_avail().x - 120)
+                if self.tag_edit[2]:
+                    imgui.set_keyboard_focus_here()
+                    self.tag_edit[2] = False
+                enter, self.tag_edit[1] = imgui.input_text("##ren", self.tag_edit[1], imgui.InputTextFlags_.enter_returns_true)
+                imgui.same_line(0, 4)
+                if imgui.button("Save") or enter:
+                    merged = self.tag_edit[1].strip() in tags and self.tag_edit[1].strip() != tag
+                    db.rename_tag(self.con, tag, self.tag_edit[1])
+                    self.flash = f"Merged #{tag} into #{self.tag_edit[1].strip()}" if merged else ""
+                    self.tag_edit, self._cache = None, {}
+                    for c in self.convs:
+                        c.reload(self.con)
+                imgui.same_line(0, 4)
+                if th.clear_x("cancel_ren", "Cancel"):
+                    self.tag_edit = None
+            else:
+                open_ = self.tag_open == tag
+                icon_w = imgui.get_frame_height() + 2
+                cluster = icon_w * 3 + imgui.calc_text_size("999").x + 26
+                row_w = imgui.get_content_region_avail().x
+                if imgui.selectable(f"#{tag}", open_, imgui.SelectableFlags_.allow_overlap,
+                                    imgui.ImVec2(max(40.0, row_w - cluster), 0))[0]:
+                    self.tag_open = None if open_ else tag
+                th.tip(f"#{tag}: click to see where it is used")
+                imgui.same_line(row_w - cluster + imgui.get_style().window_padding.x)
+                th.small(f"{n}")
+                imgui.same_line(0, 6)
+                imgui.push_style_color(imgui.Col_.button, C("track", 0.0))
+                imgui.push_style_color(imgui.Col_.text, C("text_dim"))
+                if imgui.small_button(f"{th.ICON_SEARCH}##flt"):
+                    self.tag_filter, self.side_tab = {tag}, "conv"
+                th.tip("Show only talks with this tag")
+                imgui.same_line(0, 2)
+                if imgui.small_button(f"{th.ICON_PEN}##ren"):
+                    self.tag_edit = [tag, tag, True]
+                th.tip("Rename (type an existing tag to merge into it)")
+                imgui.same_line(0, 2)
+                imgui.pop_style_color()
+                imgui.push_style_color(imgui.Col_.text, C("danger"))
+                if imgui.small_button(f"{th.ICON_X}##del"):
+                    imgui.open_popup("confirm_del")
+                imgui.pop_style_color(2)
+                th.tip("Delete this tag everywhere")
+                if imgui.begin_popup("confirm_del"):
+                    imgui.text(f"Delete #{tag} from {n} place{'s' if n != 1 else ''}?")
+                    th.small("Only the tag goes; recordings and talks are not touched.")
+                    imgui.push_style_color(imgui.Col_.text, C("danger"))
+                    if imgui.button(f"Delete #{tag}"):
+                        db.delete_tag(self.con, tag)
+                        self._cache, self.tag_filter = {}, self.tag_filter - {tag}
+                        for c in self.convs:
+                            c.reload(self.con)
+                        imgui.close_current_popup()
+                    imgui.pop_style_color()
+                    imgui.same_line()
+                    if imgui.button("Cancel"):
+                        imgui.close_current_popup()
+                    imgui.end_popup()
+                if open_:
+                    imgui.indent(12)
+                    used = db.tag_usage(self.con, tag)
+                    for kind, target in used:
+                        if kind == "conversation" and target in by_name:
+                            c = by_name[target]
+                            if imgui.selectable(f"{c.speech_start:%a %-d %b %H:%M}  {c.title or 'Conversation'}##u{target}",
+                                                c is self.sel)[0]:
+                                self.select(c)
+                        elif kind == "source":
+                            th.small(f"recording {target[:12]}…")
+                    if not used:
+                        th.small("Not used yet: add it with + tag on a talk.")
+                    imgui.unindent(12)
+            imgui.pop_id()
 
     def side_moments(self):
         items = self.cached("moments", lambda: [("note", n) for n in db.all_notes(self.con)]
@@ -1418,6 +1523,8 @@ class App:
             self.open_tr_menu = True
         elif cmd == "righttab":
             self.right_tab = arg
+        elif cmd == "tagopen":
+            self.tag_open = arg
         elif cmd == "tab":
             self.side_tab = arg
         elif cmd == "person":

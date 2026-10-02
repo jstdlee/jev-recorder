@@ -128,21 +128,23 @@ def seg_width(labels, icons=None):
     return 4 + sum(imgui.calc_text_size(l).x + 22 + (fw if icons and icons[i] else 0) for i, l in enumerate(labels))
 
 
-def seg(id_, value, options, labels=None, tips=None, icons=None):
+def seg(id_, value, options, labels=None, tips=None, icons=None, fill=None):
     """Segmented control: all options visible, the chosen one is a raised pill. Returns (changed, value).
-    icons: optional per-option country codes; a small flag is drawn before the label."""
+    icons: optional per-option country codes; a small flag is drawn before the label.
+    fill: total width to stretch to (segments share it equally), e.g. the sidebar's width."""
     labels = labels or [str(o) for o in options]
     fw = imgui.get_font_size() * 0.75 * 1.5 + 6
     dl = imgui.get_window_draw_list()
     p = imgui.get_cursor_screen_pos()
     h = imgui.get_frame_height()
-    w = seg_width(labels, icons)
+    w = max(seg_width(labels, icons), fill or 0)
+    each = (w - 4) / len(labels) if fill else None
     dl.add_rect_filled(p, imgui.ImVec2(p.x + w, p.y + h), U("track"), 7.0)
     changed, x = False, p.x + 2
     imgui.push_id(id_)
     for i, (opt, lab) in enumerate(zip(options, labels)):
         icon = icons[i] if icons else None
-        iw = imgui.calc_text_size(lab).x + 22 + (fw if icon else 0)
+        iw = each or (imgui.calc_text_size(lab).x + 22 + (fw if icon else 0))
         imgui.set_cursor_screen_pos(imgui.ImVec2(x, p.y))
         imgui.push_id(i)
         if imgui.invisible_button("##s", imgui.ImVec2(iw, h)) and value != opt:
@@ -221,6 +223,11 @@ ICON_RESTORE = "\uf2d2"    # window-restore
 ICON_TAG = "\uf02b"
 ICON_CARET = "\uf0d7"      # caret-down
 ICON_SEARCH = "\uf002"
+ICON_TALKS = "\uf086"      # comments
+ICON_PEOPLE = "\uf0c0"     # users
+ICON_FILES = "\uf1c7"      # file-audio
+ICON_MOMENTS = "\uf02e"    # bookmark
+ICON_TAGS = "\uf02c"       # tags
 
 
 def clear_x(id_, tip_text="Clear"):

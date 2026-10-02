@@ -64,3 +64,20 @@ def test_library_search_rows_notes_and_tags(tmp_path):
     assert [h[1] for h in libsearch.search([c], "time:14:13 -monday")] == [1]
     db.remove_tag(con, "conversation", "c1", "家庭")
     assert db.tags_for(con, "conversation", "c1") == []
+
+
+def test_tag_crud_create_rename_merge_delete(tmp_path):
+    from jrec import db
+    con = db.connect(tmp_path / "j.sqlite")
+    db.create_tag(con, "  #Family ")
+    assert db.all_tags(con) == {"Family": 0}
+    db.add_tag(con, "conversation", "c1", "Family")
+    db.add_tag(con, "conversation", "c2", "家庭")
+    db.add_tag(con, "conversation", "c1", "家庭")
+    assert db.all_tags(con)["家庭"] == 2
+    db.rename_tag(con, "Family", "Home")                       # plain rename keeps usage and the definition
+    assert db.tag_usage(con, "Home") == [("conversation", "c1")] and "Family" not in db.all_tags(con)
+    db.rename_tag(con, "家庭", "Home")                          # onto an existing tag: merge, no duplicates
+    assert sorted(t for _, t in db.tag_usage(con, "Home")) == ["c1", "c2"]
+    db.delete_tag(con, "Home")
+    assert db.all_tags(con) == {}
