@@ -113,6 +113,11 @@ def update_note(con, note_id, text):
     con.commit()
 
 
+def move_note(con, note_id, t, abs_iso):
+    con.execute("UPDATE note SET t=?, abs=?, updated=? WHERE id=?", (t, abs_iso, now(), note_id))
+    con.commit()
+
+
 def delete_note(con, note_id):
     con.execute("DELETE FROM note WHERE id=?", (note_id,))
     con.commit()

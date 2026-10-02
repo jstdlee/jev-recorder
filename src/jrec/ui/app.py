@@ -22,7 +22,7 @@ from .. import db, ingest, search
 from .. import theme as th
 from ..theme import C, U
 from ..timeref import parse as parse_goto
-from . import dialogs, insights, timeline, transcript
+from . import anim, dialogs, insights, timeline, transcript
 from .data import Conversation
 from .player import Player
 from .timeline import clamp_view, fmt_offset
@@ -72,6 +72,8 @@ class App:
         self.side_tab, self.person_open, self.rec_open = "conv", None, None
         self._cache, self.cache_dirty = {}, False
         self.right_tab = "insights"
+        self.view_tw, self._view_written = None, None
+        self.progress_glide = anim.Glide()
         # recorder import
         self.recorders_seen, self.pending_import = set(), None
         self.import_msg, self.importing = "", False
@@ -104,7 +106,7 @@ class App:
             self.sel = next((c for c in self.convs if c.name == self.sel.name), None)
             self.update_matches()
 
-    def select(self, conv, t=None):
+    def select(self, conv, t=None, animate=True):
         if conv is not self.sel:
             self.player.stop()
             self.sel = conv
@@ -120,10 +122,14 @@ class App:
             a, b = self.view
             if not (a <= t <= b):
                 span = b - a
-                self.view = clamp_view(t - span / 3, t + span * 2 / 3, conv.duration)
+                target = clamp_view(t - span / 3, t + span * 2 / 3, conv.duration)
+                if animate:
+                    self.animate_view(target)
+                else:
+                    self.view = target
 
-    def seek(self, c, t, play=False):
-        self.select(c, t)
+    def seek(self, c, t, play=False, animate=True):
+        self.select(c, t, animate)
         if play or self.player.playing:
             self.player.play(c, t)
 
@@ -176,7 +182,7 @@ class App:
     def jump_speech(self, c, direction):
         t = c.next_speech(self.here(c), direction)
         if t is not None:
-            self.seek(c, max(0.0, t - 0.3))
+            self.seek(c, max(0.0, t - 0.3), animate=False)   # keyboard (N/P): no animation
 
     def set_speed(self, v):
         self.player.speed = v
@@ -254,8 +260,10 @@ class App:
             return
         cmd = [sys.executable, "-m", "jrec.cli"] + (["--config", str(self.cfg_path)] if self.cfg_path else []) + args
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                     stdin=subprocess.DEVNULL, close_fds=True, cwd=str(Path.home()))
+                                     stdin=subprocess.DEVNULL, close_fds=True, cwd=str(Path.home()),
+                                     start_new_session=True)   # own process group: Stop ends it and its children
         self.job_label, self.job_t0, self.job_exit = label, time.monotonic(), None
+        self.job_stopped = False
         self.proc_log = [f"$ jrec {shlex.join(args)}"]
         self.job_file, self.job_step, self.job_files = None, None, list(files or [])
         threading.Thread(target=self._pump_log, daemon=True).start()
@@ -264,6 +272,27 @@ class App:
         todo = [r["folder"] for r in self.con.execute(
             "SELECT folder FROM conversation WHERE status='cut' ORDER BY speech_start DESC")]
         self.start_job(["process"], "Transcribing new conversations", todo)
+
+    def stop_job(self):
+        """End the running job and everything it started. Finished conversations stay done;
+        the one in progress keeps its previous state (nothing half-written is kept)."""
+        if not self.job_busy:
+            return
+        import signal
+        self.job_stopped = True
+        try:
+            os.killpg(self.proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        def reap():
+            try:
+                self.proc.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(self.proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        threading.Thread(target=reap, daemon=True).start()
 
     @property
     def job_busy(self):
@@ -282,6 +311,28 @@ class App:
         return {"asr": f"Speech to text  ·  part {d} of {t}", "align": "Word timings", "speakers": "Who spoke when",
                 "summary": f"Summarising  ·  part {d + 1} of {t}", "translate": f"Translating  ·  {d} of {t} rows"
                 }.get(stage, "Preparing")
+
+    def job_overall_smooth(self):
+        return self.progress_glide(self.job_overall())
+
+    def animate_view(self, target):
+        """Move the timeline view to `target` (ease-out 220 ms), or at once with Reduce motion."""
+        if self.prefs.get("reduce_motion"):
+            self.view = target
+            return
+        self.view_tw = anim.Tween(self.view, target, anim.VIEW_MS)
+        self._view_written = self.view
+
+    def _step_animations(self):
+        if self.view_tw:
+            if self.view != self._view_written:      # the user moved the view (drag, wheel, keys): stop
+                self.view_tw = None
+            else:
+                self.view = self._view_written = self.view_tw.value()
+                if self.view_tw.done:
+                    self.view_tw = None
+        busy = self.view_tw is not None or self.progress_glide.active or anim.fading()
+        hello_imgui.get_runner_params().fps_idling.enable_idling = not busy   # smooth frames only while moving
 
     def job_overall(self):
         if not self.job_busy:
@@ -308,7 +359,9 @@ class App:
                 self.proc_log.append(line.rstrip())
                 self.proc_log = self.proc_log[-300:]
         self.job_exit = self.proc.wait()
-        if self.job_exit:
+        if getattr(self, "job_stopped", False):
+            self.proc_log.append("stopped by you; finished conversations are kept, the current one is unchanged")
+        elif self.job_exit:
             self.proc_log.append(f"failed (exit {self.job_exit}); see the lines above")
         self.need_reload = True  # the SQLite connection belongs to the UI thread: reload there
 
@@ -350,6 +403,7 @@ class App:
     # ------------------------------------------------------------ frame
     def gui(self):
         self.cache_dirty = False
+        self._step_animations()
         if self.need_reload:
             self.need_reload = False
             self.reload()
@@ -429,13 +483,18 @@ class App:
             self.open_row(c, self.sel_row[1])
         elif imgui.is_key_pressed(K.right_arrow) or imgui.is_key_pressed(K.left_arrow):
             d = 1.0 if io.key_shift else (30.0 if io.key_alt else 5.0)
-            self.seek(c, max(0.0, min(c.duration, self.here(c) + (d if imgui.is_key_pressed(K.right_arrow) else -d))))
+            self.seek(c, max(0.0, min(c.duration, self.here(c) + (d if imgui.is_key_pressed(K.right_arrow) else -d))),
+                      animate=False)
 
-    def zoom(self, c, f, center=None):
-        a, b = self.view
+    def zoom(self, c, f, center=None, animate=False):
+        a, b = self.view_tw.b if self.view_tw else self.view      # chained clicks build on the target
         mid = center if center is not None else self.here(c)
         span = min(c.duration, max(4.0, (b - a) * f))
-        self.view = clamp_view(mid - span / 2, mid + span / 2, c.duration)
+        target = clamp_view(mid - span / 2, mid + span / 2, c.duration)
+        if animate:
+            self.animate_view(target)
+        else:
+            self.view = target
 
     # ------------------------------------------------------------ sidebar
     def sidebar(self):
@@ -620,15 +679,25 @@ class App:
         p = imgui.get_cursor_screen_pos()
         w = imgui.get_content_region_avail().x
         h = imgui.get_font_size() * 2.6
-        if imgui.invisible_button("job_ind", imgui.ImVec2(w, h)):
+        if imgui.invisible_button("job_ind", imgui.ImVec2(w - (34 if busy else 0), h)):
             self.show_progress = True
         th.tip("Show progress")
+        if busy:
+            imgui.same_line(0, 4)
+            imgui.push_style_color(imgui.Col_.button, C("danger", 0.18))
+            imgui.push_style_color(imgui.Col_.text, C("danger"))
+            if imgui.button(f"{th.ICON_STOP}##stopjob", imgui.ImVec2(30, h)):
+                self.stop_job()
+            imgui.pop_style_color(2)
+            th.tip("Stop this job")
         dl = imgui.get_window_draw_list()
         dl.add_rect_filled(p, imgui.ImVec2(p.x + w, p.y + h), U("track"), 8.0)
         if busy:
             spin = "◐◓◑◒"[int(time.monotonic() * 4) % 4]
             label = f"{spin}  {self.job_label}"
             col = U("text")
+        elif getattr(self, "job_stopped", False):
+            label, col = f"{self.job_label}: stopped", U("warn")
         elif self.job_exit:
             label, col = f"✕  {self.job_label}: failed", U("danger")
         else:
@@ -636,7 +705,7 @@ class App:
         dl.push_clip_rect(p, imgui.ImVec2(p.x + w - 6, p.y + h), True)
         dl.add_text(imgui.ImVec2(p.x + 10, p.y + 5), col, label)
         dl.pop_clip_rect()
-        frac = self.job_overall()
+        frac = self.job_overall_smooth()
         by = p.y + h - 10
         dl.add_rect_filled(imgui.ImVec2(p.x + 10, by), imgui.ImVec2(p.x + w - 10, by + 4), U("pill_border"), 2.0)
         dl.add_rect_filled(imgui.ImVec2(p.x + 10, by), imgui.ImVec2(p.x + 10 + (w - 20) * frac, by + 4),
@@ -689,7 +758,7 @@ class App:
         imgui.dummy(imgui.ImVec2(0, 2))
         avail = imgui.get_content_region_avail()
         side = c.status != "cut"
-        sum_w = max(340.0 * ts, avail.x * 0.32) if side else 0
+        sum_w = max(340.0 * ts, avail.x * 0.34) if side else 0
         imgui.begin_group()
         self.transcript_header(c, avail.x - sum_w - (14 if sum_w else 0))
         with th.card("transcript", imgui.ImVec2(avail.x - sum_w - (14 if sum_w else 0), 0), padding=(8, 6)):
@@ -697,20 +766,106 @@ class App:
         imgui.end_group()
         if side:
             imgui.same_line(0, 14)
-            imgui.begin_group()
-            _, self.right_tab = th.seg("righttab", self.right_tab, ["insights", "summary"], ["Insights", "Summary"],
-                                       ["People, places, contacts, times, relationships, important rows",
-                                        "Title, summary, key points and action items"])
-            with th.card("right", imgui.ImVec2(0, 0)):
-                if self.right_tab == "insights":
-                    insights.draw(self, c)
-                elif c.summary:
-                    self.summary_panel(c)
-                else:
-                    imgui.push_text_wrap_pos(0)
-                    imgui.text_colored(C("text_dim"), "No summary yet. Press Summarize above (needs the LLM server).")
-                    imgui.pop_text_wrap_pos()
-            imgui.end_group()
+            self.right_column(c)
+
+    def right_column(self, c):
+        """Top: preview of the selected row. Bottom: Insights | Summary. The bar between them drags."""
+        imgui.begin_group()
+        avail = imgui.get_content_region_avail()
+        head = imgui.get_frame_height() + 8
+        body_h = avail.y - head * 2 - 8
+        top_h = max(120.0, min(body_h - 120.0, body_h * self.prefs.get("preview_split", 0.42)))
+        th.section("Preview")
+        imgui.dummy(imgui.ImVec2(0, imgui.get_frame_height() - imgui.get_font_size() * 0.8 - 8))
+        with th.card("preview", imgui.ImVec2(0, top_h)):
+            self.preview(c)
+        # splitter
+        p = imgui.get_cursor_screen_pos()
+        imgui.invisible_button("split", imgui.ImVec2(-1, 8))
+        if imgui.is_item_hovered() or imgui.is_item_active():
+            imgui.set_mouse_cursor(imgui.MouseCursor_.resize_ns)
+            imgui.get_window_draw_list().add_rect_filled(imgui.ImVec2(p.x + avail.x * 0.4, p.y + 3),
+                                                          imgui.ImVec2(p.x + avail.x * 0.6, p.y + 5), U("pill_border"), 2.0)
+        if imgui.is_item_active():
+            self.prefs["preview_split"] = max(0.15, min(0.85, (top_h + imgui.get_io().mouse_delta.y) / max(1.0, body_h)))
+        if imgui.is_item_deactivated():
+            th.save_prefs(self.prefs)
+        _, self.right_tab = th.seg("righttab", self.right_tab, ["insights", "summary"], ["Insights", "Summary"],
+                                   ["People, places, contacts, times, relationships, important rows",
+                                    "Title, summary, key points and action items"])
+        with th.card("right", imgui.ImVec2(0, 0)):
+            if self.right_tab == "insights":
+                insights.draw(self, c)
+            elif c.summary:
+                self.summary_panel(c)
+            else:
+                imgui.push_text_wrap_pos(0)
+                imgui.text_colored(C("text_dim"), "No summary yet. Press Summarize above (needs the LLM server).")
+                imgui.pop_text_wrap_pos()
+        imgui.end_group()
+
+    def preview(self, c):
+        if not (self.sel_row and self.sel_row[0] == c.name and self.sel_row[1] < len(c.segments)):
+            imgui.push_text_wrap_pos(0)
+            imgui.text_colored(C("text_dim"), "Click a row to read it here in full. Double-click plays it.")
+            imgui.pop_text_wrap_pos()
+            return
+        i = self.sel_row[1]
+        s = c.segments[i]
+        from .flags import lang_badge
+        lang_badge(s.get("lang"), clickable=False, id_="pv")
+        imgui.same_line()
+        imgui.text(f"{c.speaker(s, i)}  ·  {s['abs_start'][11:19]}–{s['abs_end'][11:19]}")
+        imgui.same_line()
+        th.small(f"{s['_t1'] - s['_t0']:.1f} s  ·  row {i + 1}/{len(c.segments)}")
+        # large icon: the same row in its own window
+        bw = imgui.get_frame_height() * 1.3
+        imgui.same_line(imgui.get_window_width() - bw - 16)
+        if imgui.button(f"{th.ICON_EXPAND}##pvopen", imgui.ImVec2(bw, bw)):
+            self.open_row(c, i)
+        th.tip("Open in a window")
+        imgui.begin_child("pvtext", imgui.ImVec2(0, -imgui.get_frame_height() - 10), 0)
+        imgui.push_text_wrap_pos(0)
+        imgui.push_font(None, imgui.get_style().font_size_base * 1.1)
+        imgui.text(s["text"])
+        imgui.pop_font()
+        for L, tr in c.translations.items():
+            if i in tr:
+                imgui.dummy(imgui.ImVec2(0, 2))
+                lang_badge(L, clickable=False, id_=f"pv{L}")
+                imgui.same_line()
+                imgui.text_colored(C("text_dim"), tr[i])
+        t_next = c.segments[i + 1]["_t0"] if i + 1 < len(c.segments) else c.duration
+        for nt in c.notes_in(s["_t0"] if i else 0.0, t_next):
+            imgui.dummy(imgui.ImVec2(0, 2))
+            imgui.push_style_color(imgui.Col_.text, C("note"))
+            imgui.text_wrapped(f"{th.ICON_NOTE}  {nt['text']}")
+            imgui.pop_style_color()
+            if imgui.is_item_clicked():
+                self.edit_note(c, nt)
+        imgui.pop_text_wrap_pos()
+        imgui.end_child()
+        if imgui.button("Play"):
+            self.seek(c, max(0.0, s["_t0"] - 0.2), play=True)
+        imgui.same_line(0, 4)
+        if imgui.button("Repeat"):
+            self.range_ab = (max(0.0, s["_t0"] - 0.3), min(c.duration, s["_t1"] + 0.3))
+            self.loop = True
+            self.seek(c, self.range_ab[0], play=True)
+        th.tip("Loop this row (A–B) until you stop it")
+        imgui.same_line(0, 4)
+        imgui.push_style_color(imgui.Col_.text, C("note"))
+        if imgui.button(f"{th.ICON_NOTE} Note"):
+            self.new_note(c, s["_t0"])
+        imgui.pop_style_color()
+        imgui.same_line(0, 4)
+        to = self.prefs["translate_to"]
+        if th.button("Translate", disabled=self.job_busy or i in c.translations.get(to, {}),
+                     why="Already translated" if i in c.translations.get(to, {}) else "A job is running"):
+            self.translate(c, to, rows=[i])
+        imgui.same_line(0, 4)
+        if imgui.button("Copy"):
+            imgui.set_clipboard_text(s["text"])
 
     def actions(self, c):
         busy = self.job_busy
@@ -798,7 +953,7 @@ class App:
             t = parse_goto(self.goto_buf, c.start, here, c.duration)
             self.goto_err = t is None
             if t is not None:
-                self.seek(c, t)
+                self.seek(c, t, animate=False)     # Enter: keyboard, instant
                 self.zoom(c, 1.0, t)
         if self.goto_buf and th.clear_x("goto"):
             self.goto_buf, self.goto_err = "", False
@@ -924,11 +1079,12 @@ class App:
         # zoom, right-aligned
         zw = imgui.calc_text_size("−+Fit talkWhole").x + 4 * 22
         imgui.same_line(max(imgui.get_cursor_pos_x() + 10, imgui.get_window_width() - zw - 20))
-        for label, fn, tip_ in (("−", lambda: self.zoom(c, 1.6), "Zoom out (-)"),
-                                ("+", lambda: self.zoom(c, 0.6), "Zoom in (=); the scroll wheel zooms at the pointer"),
-                                ("Fit talk", lambda: setattr(self, "view", clamp_view(c.sp0 - 15, c.sp1 + 15, c.duration)),
+        for label, fn, tip_ in (("−", lambda: self.zoom(c, 1.6, animate=True), "Zoom out (-)"),
+                                ("+", lambda: self.zoom(c, 0.6, animate=True),
+                                 "Zoom in (=); the scroll wheel zooms at the pointer"),
+                                ("Fit talk", lambda: self.animate_view(clamp_view(c.sp0 - 15, c.sp1 + 15, c.duration)),
                                  "Show just the conversation"),
-                                ("Whole", lambda: setattr(self, "view", (0.0, c.duration)), "Show the whole clip")):
+                                ("Whole", lambda: self.animate_view((0.0, c.duration)), "Show the whole clip")):
             if imgui.small_button(label):
                 fn()
             th.tip(tip_)
@@ -950,8 +1106,14 @@ class App:
             self.row_lang = {k: x for k, x in self.row_lang.items() if k[0] != c.name}
             self.update_matches()
         imgui.same_line(0, 12)
+        ch, v = th.labeled_seg("Rows", "rows", self.prefs.get("rows", "line"), ["line", "full"], ["One line", "Full text"],
+                               ["Fast for long recordings; the selected row shows in full in Preview",
+                                "Every row wraps to its full text"])
+        if ch:
+            self.set_pref("rows", v)
+        imgui.same_line(0, 12)
         imgui.align_text_to_frame_padding()
-        th.small("click a row to select, double-click to play, a flag to switch language, Open for the full row")
+        th.small("click = select · double-click = play")
 
     def summary_panel(self, c):
         sm = c.summary

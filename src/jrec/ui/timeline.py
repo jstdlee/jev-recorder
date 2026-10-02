@@ -145,8 +145,9 @@ def draw(app, c):
                                imgui.ImVec2(x - r, ny), U("note"))
             dl.add_line(imgui.ImVec2(x, wave_top), imgui.ImVec2(x, ny - r), U("note", 0.45), 1.0)
             mp = imgui.get_io().mouse_pos
-            if hovered and abs(mp.x - x) <= r + 2 and abs(mp.y - ny) <= r + 3:
+            if hovered and abs(mp.x - x) <= r + 4 and abs(mp.y - ny) <= r + 5:
                 note_hover = n
+                imgui.set_mouse_cursor(imgui.MouseCursor_.hand)
 
     # axis: major ticks with labels, minor ticks
     ay = wave_bot + h_lane + h_notes
@@ -187,7 +188,8 @@ def draw(app, c):
         mx = io.mouse_pos.x
         t_m = max(0.0, min(c.duration, t_of(mx)))
         if note_hover:
-            imgui.set_tooltip(f"Note at {c.abs_at(note_hover['t']):%H:%M:%S}\n{note_hover['text']}")
+            imgui.set_tooltip(f"Note at {c.abs_at(note_hover['t']):%H:%M:%S}\n{note_hover['text']}\n\n"
+                              "Drag to move it, click to edit")
         else:
             rel = f"  ·  {fmt_offset(t_m - app.cursor, True)} from the playhead" if abs(t_m - app.cursor) > 0.5 else ""
             imgui.set_tooltip(f"{c.abs_at(t_m):%H:%M:%S}  ·  {fmt_offset(t_m)} into the clip{rel}")
@@ -214,8 +216,10 @@ def draw(app, c):
             app.seek(c, t_m, play=True)
             app.drag = None
         elif imgui.is_mouse_clicked(0):
+            if note_hover is not None and not grab:
+                grab = "note"
             app.drag = {"x": mx, "view": app.view, "t": t_m, "select": io.key_shift, "grab": grab,
-                        "range": app.range_ab}
+                        "range": app.range_ab, "note": note_hover}
             if (grab or io.key_shift) and app.player.playing:
                 app.cursor = app.player.position() or app.cursor
                 app.player.stop()        # editing the range pauses; press Play to continue
@@ -227,7 +231,11 @@ def draw(app, c):
     if d and imgui.is_mouse_down(0):
         mx = io.mouse_pos.x
         t2 = max(0.0, min(c.duration, t_of(mx)))
-        if d.get("grab") in ("a", "b"):
+        if d.get("grab") == "note" and abs(mx - d["x"]) > 3:
+            d["note"]["t"] = t2            # follows the pointer; saved on release
+            d["moved"] = True
+            imgui.set_mouse_cursor(imgui.MouseCursor_.resize_ew)
+        elif d.get("grab") in ("a", "b"):
             ra, rb = d["range"]
             na, nb = (t2, rb) if d["grab"] == "a" else (ra, t2)
             app.range_ab = (min(na, nb), max(na, nb))
@@ -244,6 +252,16 @@ def draw(app, c):
             a, b = d["view"]
             dt = (mx - d["x"]) / w * (b - a)
             app.view = clamp_view(a - dt, b - dt, c.duration)
+    if d and imgui.is_mouse_released(0) and d.get("grab") == "note":
+        n = d["note"]
+        if d.get("moved"):
+            from .. import db
+            db.move_note(app.con, n["id"], n["t"], c.abs_at(n["t"]).isoformat())
+            c.notes = db.notes(app.con, c.name)
+            app._cache = {}
+        else:
+            app.edit_note(c, n)
+        app.drag = d = None
     if d and imgui.is_mouse_released(0):
         if abs(io.mouse_pos.x - d["x"]) <= 3 and hovered and not d.get("grab"):
             if note_hover:
@@ -268,8 +286,12 @@ def draw(app, c):
         dl.add_line(imgui.ImVec2(x, m0.y), imgui.ImVec2(x, m0.y + 4), U("match"), 2.0)
     dl.add_rect(imgui.ImVec2(mx_of(v0), m0.y), imgui.ImVec2(max(mx_of(v1), mx_of(v0) + 3), m0.y + mh), U("text"), 4.0, 1.5)
     dl.add_line(imgui.ImVec2(mx_of(app.cursor), m0.y), imgui.ImVec2(mx_of(app.cursor), m0.y + mh), U("playhead"), 1.5)
-    if imgui.is_item_active():
+    if imgui.is_item_activated():                      # click: glide there
         t = (io.mouse_pos.x - m0.x) / w * c.duration
+        app.animate_view(clamp_view(t - span / 2, t + span / 2, c.duration))
+    elif imgui.is_item_active() and abs(io.mouse_delta.x) > 0:   # drag: follow the pointer 1:1
+        t = (io.mouse_pos.x - m0.x) / w * c.duration
+        app.view_tw = None
         app.view = clamp_view(t - span / 2, t + span / 2, c.duration)
     th.tip("Whole clip: drag to move the view")
 

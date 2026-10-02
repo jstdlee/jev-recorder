@@ -11,7 +11,8 @@ from imgui_bundle import imgui
 
 PREFS_PATH = Path("~/.config/jrec/ui.json").expanduser()
 DEFAULT_PREFS = {"theme": "Dark", "text_size": 1.0, "speed": 1.0, "skip_silence": True, "follow": True,
-                 "translate_to": "English", "axis": "clock", "sound": "original", "channel": "both"}
+                 "translate_to": "English", "axis": "clock", "sound": "original", "channel": "both",
+                 "rows": "line", "preview_split": 0.42, "reduce_motion": False}
 
 
 def hexc(h, a=1.0):
@@ -202,6 +203,8 @@ ICON_NOTE = "\uf249"     # note-sticky
 ICON_OPEN = "\uf065"     # expand
 ICON_PEN = "\uf304"
 ICON_STAR = "\uf005"
+ICON_STOP = "\uf04d"       # stop (square)
+ICON_EXPAND = "\uf31e"     # up-right-and-down-left-from-center
 
 
 def clear_x(id_, tip_text="Clear"):

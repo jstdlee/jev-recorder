@@ -7,6 +7,7 @@ from imgui_bundle import imgui
 from .. import db
 from .. import theme as th
 from ..theme import C
+from . import anim
 from .flags import LANG, lang_badge
 from .timeline import fmt_offset
 
@@ -29,7 +30,9 @@ def _begin_modal(name, open_flag, width):
         imgui.open_popup(name)
     _center(width)
     imgui.push_style_color(imgui.Col_.popup_bg, C("bg"))
+    imgui.push_style_var(imgui.StyleVar_.alpha, anim.fade_in(name, imgui.is_popup_open(name)))
     opened, _ = imgui.begin_popup_modal(name, None, imgui.WindowFlags_.no_saved_settings | imgui.WindowFlags_.no_title_bar)
+    imgui.pop_style_var()
     imgui.pop_style_color()
     if opened and imgui.is_key_pressed(imgui.Key.escape, False) and not imgui.get_io().want_text_input:
         imgui.close_current_popup()
@@ -67,7 +70,8 @@ def _settings_rows(app):
               "axis": lambda: app.prefs["axis"], "dspeed": lambda: app.player.speed,
               "dskip": lambda: app.skip_silence, "dsound": lambda: app.player.sound,
               "chunk": lambda: int(prof.get("chunk_chars", 256000)), "overlap": lambda: int(prof.get("overlap_chars", 8000)),
-              "tto": lambda: app.prefs["translate_to"], "aeng": lambda: app.cfg.analysis.get("engine", "rules")}
+              "tto": lambda: app.prefs["translate_to"], "aeng": lambda: app.cfg.analysis.get("engine", "rules"),
+              "rmotion": lambda: bool(app.prefs.get("reduce_motion"))}
 
     def set_skip(v):
         app.skip_silence = v
@@ -134,6 +138,8 @@ def _settings_rows(app):
          seg_row("theme", ["Dark", "Light"], None, lambda v: app.set_pref("theme", v))),
         ("Appearance", "Text size", "Everything in the window; Ctrl+ Ctrl– Ctrl+0 too",
          seg_row("size", [1.0, 1.1, 1.25, 1.5], ["100%", "110%", "125%", "150%"], lambda v: app.set_pref("text_size", v))),
+        ("Appearance", "Reduce motion", "Move the timeline at once instead of gliding; dialogs still fade",
+         seg_row("rmotion", [False, True], ["Off", "On"], lambda v: app.set_pref("reduce_motion", v))),
         ("Appearance", "Time axis", "Label the timeline with the clock, or time since the clip starts",
          seg_row("axis", ["clock", "offset"], ["Clock", "From start"], lambda v: app.set_pref("axis", v))),
         ("Playback", "Speed", "Pitch stays natural at every speed",
@@ -171,6 +177,7 @@ def _settings_rows(app):
 def settings(app):
     """A normal floating window: movable, closable, stays above the main window, with a sticky search."""
     if not app.show_settings:
+        anim.fade_in("Settings", False)
         return
     vp = imgui.get_main_viewport()
     w = min(720 * app.prefs["text_size"], vp.work_size.x - 60)
@@ -182,6 +189,7 @@ def settings(app):
     imgui.push_style_color(imgui.Col_.title_bg_active, C("pill"))
     imgui.push_style_var(imgui.StyleVar_.window_border_size, 1.0)
     imgui.push_style_var(imgui.StyleVar_.window_rounding, 10.0)
+    imgui.set_next_window_bg_alpha(anim.fade_in("Settings", True))
     visible, app.show_settings = imgui.begin("Settings", True, imgui.WindowFlags_.no_collapse
                                              | imgui.WindowFlags_.no_saved_settings)
     imgui.pop_style_var(2)
@@ -484,12 +492,14 @@ def progress(app):
         return
     title(app.job_label or "Background job")
     busy = app.job_busy
+    stopped = getattr(app, "job_stopped", False)
     th.small((f"Running for {app.job_elapsed():.0f} s. You can keep listening and taking notes meanwhile."
-              if busy else ("Failed: see the log below." if app.job_exit else "Finished.")),
-             "danger" if app.job_exit and not busy else "text_dim")
+              if busy else ("Stopped." if stopped else "Failed: see the log below." if app.job_exit else "Finished.")),
+             "warn" if stopped and not busy else "danger" if app.job_exit and not busy else "text_dim")
     imgui.dummy(imgui.ImVec2(0, 4))
     files = app.job_files
     overall = app.job_overall()
+    overall = app.job_overall_smooth()
     imgui.progress_bar(overall if busy or not app.job_exit else 0.0, imgui.ImVec2(-1, 0),
                        f"Overall  ·  {overall * 100:.0f}%")
     th.section("Conversations")
@@ -512,6 +522,13 @@ def progress(app):
             th.small(line, "danger" if "rror" in line or "failed" in line else "text_dim")
         if app.job_busy:
             imgui.set_scroll_here_y(1.0)
+    if busy:
+        imgui.push_style_color(imgui.Col_.text, C("danger"))
+        if imgui.button(f"{th.ICON_STOP}  Stop"):
+            app.stop_job()
+        imgui.pop_style_color()
+        th.tip("End this job now. Finished conversations are kept; the current one stays as it was.")
+        imgui.same_line()
     if th.button("Hide" if busy else "Close"):
         imgui.close_current_popup()
         app.show_progress = False
