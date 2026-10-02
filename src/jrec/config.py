@@ -1,4 +1,5 @@
 """Config: ~/.config/jrec/config.toml (or $JREC_CONFIG). Built-in defaults cover the Sony ICD-TX660."""
+import json
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -25,6 +26,8 @@ default = "local"
 base_url = "http://localhost:8888/v1"
 model = "default"
 max_tokens = 32768        # thinking models spend many tokens reasoning
+chunk_chars = 256000      # long transcripts are summarised in chunks of this many characters
+overlap_chars = 8000      # ... each repeating the end of the previous chunk for context
 # api_key_env = "MY_KEY"  # read the key from an environment variable
 """
 
@@ -46,6 +49,27 @@ class Config:
     library: Path
     devices: list
     llm: dict = field(default_factory=dict)
+    path: Path | None = None          # the config file this came from (or the default location)
+
+    @property
+    def llm_override_path(self):
+        """LLM settings edited in the app: merged over [llm] from the config file."""
+        return (self.path.parent if self.path else Path("~/.config/jrec").expanduser()) / "llm.json"
+
+    def save_llm(self, name, values, default=None):
+        p = self.llm_override_path
+        try:
+            data = json.loads(p.read_text())
+        except (OSError, ValueError):
+            data = {}
+        data.setdefault("profiles", {}).setdefault(name, {}).update(values)
+        if default:
+            data["default"] = default
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data, indent=1))
+        self.llm.setdefault("profiles", {}).setdefault(name, {}).update(values)
+        if default:
+            self.llm["default"] = default
 
     def llm_profile(self, name=None):
         profiles = self.llm.get("profiles", {})
@@ -69,4 +93,13 @@ def load(path=None):
     devices = [Device(**d) for d in data.get("device", [])] or \
               [Device(**d) for d in tomllib.loads(DEFAULT)["device"]]
     llm = data.get("llm") or tomllib.loads(DEFAULT)["llm"]
-    return Config(Path(data.get("library", "~/jrec-library")).expanduser(), devices, llm)
+    cfg = Config(Path(data.get("library", "~/jrec-library")).expanduser(), devices, llm, path)
+    try:  # settings changed in the app win over the file
+        over = json.loads(cfg.llm_override_path.read_text())
+        for name, vals in over.get("profiles", {}).items():
+            cfg.llm.setdefault("profiles", {}).setdefault(name, {}).update(vals)
+        if over.get("default"):
+            cfg.llm["default"] = over["default"]
+    except (OSError, ValueError):
+        pass
+    return cfg

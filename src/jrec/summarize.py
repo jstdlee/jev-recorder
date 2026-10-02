@@ -1,17 +1,20 @@
 """Conversation summary via any OpenAI-compatible chat endpoint (config profiles).
 
 Every key point / action item cites transcript line numbers, turned into clock times, so
-each claim points back to the audio. Long transcripts: chunk -> notes -> merged summary.
-Written for small models: plain JSON schema in the prompt, validated, retried.
+each claim points back to the audio. Long transcripts are cut into chunks of
+profile["chunk_chars"] (default 256k characters) that overlap by profile["overlap_chars"]
+(default 8k), so nothing at a chunk boundary loses its context; the chunk notes are then
+merged. Stored in the database (summary table) and as summary.json/.md in the folder.
 """
 import json
-import os
-import re
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-CHUNK_CHARS = 24000
+from . import db
+from .llm import ask as _ask, chat, parse_json as _parse_json  # noqa: F401 (re-exported for callers/tests)
+
+CHUNK_CHARS = 256_000
+OVERLAP_CHARS = 8_000
 
 SCHEMA_HINT = """Return ONLY one JSON object, no prose, with exactly these keys:
 {"title": str (max 12 words),
@@ -32,57 +35,45 @@ def _lines(segs):
     return [f"[{i}] {s['abs_start'][11:19]} {s.get('speaker') or '?'}: {s['text']}" for i, s in enumerate(segs)]
 
 
-def chat(profile, system, user):
-    body = {"model": profile["model"], "messages": [{"role": "system", "content": system},
-                                                    {"role": "user", "content": user}],
-            "temperature": 0.2, "max_tokens": profile.get("max_tokens", 4096), **profile.get("extra_body", {})}
-    req = urllib.request.Request(profile["base_url"].rstrip("/") + "/chat/completions", json.dumps(body).encode(),
-                                 {"Content-Type": "application/json"})
-    key = os.environ.get(profile["api_key_env"]) if profile.get("api_key_env") else profile.get("api_key")
-    if key:
-        req.add_header("Authorization", f"Bearer {key}")
-    with urllib.request.urlopen(req, timeout=profile.get("timeout", 600)) as r:
-        msg = json.loads(r.read())["choices"][0]["message"]
-    return msg.get("content") or ""
+def chunk_lines(lines, size, overlap):
+    """Split lines into chunks of <= size characters; each chunk starts with the last
+    `overlap` characters' worth of lines from the previous chunk (context, not new work)."""
+    chunks, cur, n = [], [], 0
+    for ln in lines:
+        if cur and n + len(ln) + 1 > size:
+            chunks.append(cur)
+            keep, k = [], 0
+            for prev in reversed(cur):
+                if k + len(prev) + 1 > overlap:
+                    break
+                keep.insert(0, prev)
+                k += len(prev) + 1
+            cur, n = keep, k
+        cur.append(ln)
+        n += len(ln) + 1
+    if cur:
+        chunks.append(cur)
+    return chunks
 
 
-def _parse_json(text):
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
-    m = re.search(r"\{.*\}", text, flags=re.S)
-    if not m:
-        raise ValueError("no JSON object in reply")
-    return json.loads(m.group(0))
-
-
-def _ask(profile, system, user, required, tries=3):
-    last = None
-    for _ in range(tries):
-        try:
-            d = _parse_json(chat(profile, system, user))
-            missing = [k for k in required if k not in d]
-            if not missing:
-                return d
-            last = f"missing keys {missing}"
-        except (ValueError, json.JSONDecodeError) as e:
-            last = str(e)
-        user += f"\n\n(Your previous reply was invalid: {last}. Reply with the JSON object only.)"
-    raise RuntimeError(f"LLM did not return valid JSON after {tries} tries: {last}")
-
-
-def summarize_segments(segs, profile):
+def summarize_segments(segs, profile, progress=None):
     lines = _lines(segs)
     sys_msg = "You summarize transcribed conversations from a voice recorder, faithfully and concisely."
+    size = int(profile.get("chunk_chars", CHUNK_CHARS))
+    overlap = int(profile.get("overlap_chars", OVERLAP_CHARS))
     text = "\n".join(lines)
-    if len(text) <= CHUNK_CHARS:
+    if len(text) <= size:
         return _ask(profile, sys_msg, f"{SCHEMA_HINT}\n\nTranscript:\n{text}", ["title", "summary", "key_points"])
-    notes, buf = [], []
-    for ln in lines + [None]:
-        if buf and (ln is None or sum(map(len, buf)) + len(ln) > CHUNK_CHARS):
-            d = _ask(profile, sys_msg, f"{NOTES_HINT}\n\nTranscript part:\n" + "\n".join(buf), ["notes"])
-            notes += d["notes"]
-            buf = []
-        if ln is not None:
-            buf.append(ln)
+    notes = []
+    parts = chunk_lines(lines, size, overlap)
+    for k, part in enumerate(parts):
+        if progress:
+            progress("summary", k, len(parts) + 1)
+        head = ("Lines before the first new line are repeated from the previous part for context only.\n"
+                if k else "")
+        d = _ask(profile, sys_msg, f"{NOTES_HINT}\n{head}\nTranscript part {k + 1} of {len(parts)}:\n" + "\n".join(part),
+                 ["notes"])
+        notes += d["notes"]
     merged = "\n".join(f"- {n['text']} {n.get('refs', [])}" for n in notes)
     return _ask(profile, sys_msg, f"{SCHEMA_HINT}\n\nNotes from all parts of the conversation (refs are line numbers):\n"
                                   f"{merged}", ["title", "summary", "key_points"])
@@ -98,17 +89,19 @@ def _cite(refs, segs):
     return out
 
 
-def summarize_folder(folder, profile):
+def summarize_folder(folder, profile, con=None, progress=None):
     folder = Path(folder)
     t = json.loads((folder / "transcript.json").read_text())
     segs = t["segments"]
-    d = summarize_segments(segs, profile)
+    d = summarize_segments(segs, profile, progress)
     for k in ("key_points", "action_items"):
         for item in d.get(k, []):
             item["times"] = _cite(item.get("refs"), segs)
     d["_meta"] = {"model": profile["model"], "endpoint": profile["base_url"],
                   "created": datetime.now().astimezone().isoformat(timespec="seconds")}
     (folder / "summary.json").write_text(json.dumps(d, ensure_ascii=False, indent=1))
+    if con is not None:
+        db.save_summary(con, folder.name, d, profile["model"])
     md = [f"# {d['title']}", "", d["summary"], "", "## Key points"]
     md += [f"- {p['text']} ({', '.join(p['times'])})" for p in d.get("key_points", [])]
     if d.get("action_items"):

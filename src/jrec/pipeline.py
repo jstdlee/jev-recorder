@@ -1,16 +1,10 @@
 """cut -> transcribe -> enhance -> summarize for everything new, one heavy step at a time."""
 import json
-import urllib.request
 
 from . import db, thermal
+from .llm import reachable as llm_reachable
 
 
-def llm_reachable(profile, timeout=3):
-    try:
-        urllib.request.urlopen(profile["base_url"].rstrip("/") + "/models", timeout=timeout)
-        return True
-    except Exception:
-        return False
 
 
 def process_all(cfg, diarization=True, log=print):
@@ -67,7 +61,7 @@ def _post(cfg, con, out, log):
     pending = [r["folder"] for r in con.execute("SELECT folder FROM conversation WHERE status='transcribed'")]
     if pending and llm_reachable(prof):
         for name in pending:
-            d = summarize.summarize_folder(out / name, prof)
+            d = summarize.summarize_folder(out / name, prof, con)
             con.execute("UPDATE conversation SET status='summarized' WHERE folder=?", (name,))
             con.commit()
             log(f"summarized {name}: {d['title']}")

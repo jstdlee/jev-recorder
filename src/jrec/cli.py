@@ -12,6 +12,8 @@
   jrec enhance [FOLDER ...]          listening track listen.opus (DeepFilterNet3, CPU)
   jrec summarize [FOLDER ...] [--llm PROFILE]
                                      title/summary/points/actions with clock-time citations
+  jrec translate FOLDER --to LANG [--rows 1,2]
+                                     translate transcript rows with the LLM (stored in the database)
   jrec search QUERY                  full-text search over all transcripts
   jrec process [--no-diarization]    cut + transcribe + enhance + summarize everything new
   jrec watch                         on plug-in: read-only remount, scan, ask (Import/Skip), process
@@ -232,12 +234,25 @@ def cmd_summarize(cfg, a):
     folders = [Path(f) for f in a.folders] or [cfg.library / "conversations" / r["folder"] for r in
                                                con.execute("SELECT folder FROM conversation WHERE status='transcribed'")]
     for i, f in enumerate(folders, 1):
-        d = summarize.summarize_folder(f, prof)
+        progress_line("file", i, len(folders), f.name)
+        d = summarize.summarize_folder(f, prof, con, progress=lambda st, d_, t: progress_line("step", st, d_, t))
         con.execute("UPDATE conversation SET status='summarized' WHERE folder=?", (f.name,))
         con.commit()
         print(f"[{i}/{len(folders)}] {f.name}: {d['title']}")
     if not folders:
         print("nothing to summarize")
+
+
+def cmd_translate(cfg, a):
+    from . import translate
+    con = db.connect(cfg.db_path)
+    prof = cfg.llm_profile(a.llm)
+    rows = [int(x) for x in a.rows.split(",")] if a.rows else None
+    f = Path(a.folder)
+    progress_line("file", 1, 1, f.name)
+    out = translate.translate_folder(f, a.to, prof, con, rows,
+                                     progress=lambda st, d, t: progress_line("step", st, d, t))
+    print(f"{len(out)} row(s) in {a.to}")
 
 
 def cmd_search(cfg, a):
@@ -260,11 +275,27 @@ def cmd_watch(cfg, a):
 
 
 def cmd_ui(cfg, a):
+    import atexit
+    import faulthandler
     import os
+    import time as _t
+    import traceback
     from . import ui
+    # a launch log, so a window that closes by itself leaves a trace (segfaults included)
+    log_path = Path("~/.cache/jrec/ui.log").expanduser()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log = open(log_path, "a", buffering=1)
+    faulthandler.enable(log)
+    log.write(f"\n{_t.strftime('%F %T')} start pid={os.getpid()} DISPLAY={os.environ.get('DISPLAY')} "
+              f"WAYLAND={os.environ.get('WAYLAND_DISPLAY')} tty={sys.stdin.isatty()}\n")
+    atexit.register(lambda: log.write(f"{_t.strftime('%F %T')} exit (normal)\n"))
     if a.config:  # child jobs started from the UI use the same config
         os.environ["JREC_CONFIG_PATH"] = str(Path(a.config).expanduser().resolve())
-    ui.run(cfg, a.ui_script)
+    try:
+        ui.run(cfg, a.ui_script)
+    except BaseException:
+        log.write(traceback.format_exc())
+        raise
 
 
 def main(argv=None):
@@ -284,6 +315,8 @@ def main(argv=None):
     e = sub.add_parser("enhance"); e.add_argument("folders", nargs="*")
     sm = sub.add_parser("summarize"); sm.add_argument("folders", nargs="*"); sm.add_argument("--llm")
     q = sub.add_parser("search"); q.add_argument("query")
+    tr = sub.add_parser("translate"); tr.add_argument("folder"); tr.add_argument("--to", required=True)
+    tr.add_argument("--rows"); tr.add_argument("--llm")
     pr = sub.add_parser("process"); pr.add_argument("--no-diarization", action="store_true")
     wa = sub.add_parser("watch"); wa.add_argument("--no-process", action="store_true")
     u = sub.add_parser("ui"); u.add_argument("--ui-script", help="e.g. open:0,wait:2.5,shot:/tmp/a.png (wait in seconds)")
@@ -291,7 +324,7 @@ def main(argv=None):
     cfg = config.load(a.config)
     {"devices": cmd_devices, "scan": cmd_scan, "import": cmd_import, "sources": cmd_sources,
      "cut": cmd_cut, "verify": cmd_verify, "transcribe": cmd_transcribe,
-     "enhance": cmd_enhance, "summarize": cmd_summarize, "search": cmd_search,
+     "enhance": cmd_enhance, "summarize": cmd_summarize, "search": cmd_search, "translate": cmd_translate,
      "process": cmd_process, "watch": cmd_watch, "ui": cmd_ui}[a.cmd](cfg, a)
 
 
