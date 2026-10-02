@@ -13,6 +13,8 @@
   jrec summarize [FOLDER ...] [--llm PROFILE]
                                      title/summary/points/actions with clock-time citations
   jrec search QUERY                  full-text search over all transcripts
+  jrec process [--no-diarization]    cut + transcribe + enhance + summarize everything new
+  jrec watch                         on plug-in: read-only remount, scan, ask (Import/Skip), process
 """
 import argparse
 import json
@@ -168,7 +170,7 @@ def cmd_verify(cfg, a):
 
 
 def cmd_transcribe(cfg, a):
-    from . import search, transcribe
+    from . import search, thermal, transcribe
     con = db.connect(cfg.db_path)
     if a.folders:
         folders = [Path(f) for f in a.folders]
@@ -181,6 +183,7 @@ def cmd_transcribe(cfg, a):
     engine = transcribe.Engine()
     for i, f in enumerate(folders, 1):
         print(f"[{i}/{len(folders)}] {f.name}", flush=True)
+        thermal.wait_cool()
         segs = transcribe.transcribe_folder(f, engine, use_diarization=not a.no_diarization)
         search.index_transcript(con, f)
         con.execute("UPDATE conversation SET status='transcribed' WHERE folder=?", (f.name,))
@@ -222,6 +225,16 @@ def cmd_search(cfg, a):
     print(f"{len(hits)} hit(s)")
 
 
+def cmd_process(cfg, a):
+    from .pipeline import process_all
+    process_all(cfg, diarization=not a.no_diarization)
+
+
+def cmd_watch(cfg, a):
+    from . import watch
+    watch.run(cfg, process_after=not a.no_process)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="jrec", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config")
@@ -239,11 +252,14 @@ def main(argv=None):
     e = sub.add_parser("enhance"); e.add_argument("folders", nargs="*")
     sm = sub.add_parser("summarize"); sm.add_argument("folders", nargs="*"); sm.add_argument("--llm")
     q = sub.add_parser("search"); q.add_argument("query")
+    pr = sub.add_parser("process"); pr.add_argument("--no-diarization", action="store_true")
+    wa = sub.add_parser("watch"); wa.add_argument("--no-process", action="store_true")
     a = ap.parse_args(argv)
     cfg = config.load(a.config)
     {"devices": cmd_devices, "scan": cmd_scan, "import": cmd_import, "sources": cmd_sources,
      "cut": cmd_cut, "verify": cmd_verify, "transcribe": cmd_transcribe,
-     "enhance": cmd_enhance, "summarize": cmd_summarize, "search": cmd_search}[a.cmd](cfg, a)
+     "enhance": cmd_enhance, "summarize": cmd_summarize, "search": cmd_search,
+     "process": cmd_process, "watch": cmd_watch}[a.cmd](cfg, a)
 
 
 if __name__ == "__main__":
