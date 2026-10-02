@@ -123,22 +123,26 @@ def card(id_, size=imgui.ImVec2(0, 0), padding=(14, 12), flags=0):
         imgui.pop_style_var()
 
 
-def seg_width(labels):
-    return 4 + sum(imgui.calc_text_size(l).x + 22 for l in labels)
+def seg_width(labels, icons=None):
+    fw = imgui.get_font_size() * 0.75 * 1.5 + 6
+    return 4 + sum(imgui.calc_text_size(l).x + 22 + (fw if icons and icons[i] else 0) for i, l in enumerate(labels))
 
 
-def seg(id_, value, options, labels=None, tips=None):
-    """Segmented control: all options visible, the chosen one is a raised pill. Returns (changed, value)."""
+def seg(id_, value, options, labels=None, tips=None, icons=None):
+    """Segmented control: all options visible, the chosen one is a raised pill. Returns (changed, value).
+    icons: optional per-option country codes; a small flag is drawn before the label."""
     labels = labels or [str(o) for o in options]
+    fw = imgui.get_font_size() * 0.75 * 1.5 + 6
     dl = imgui.get_window_draw_list()
     p = imgui.get_cursor_screen_pos()
     h = imgui.get_frame_height()
-    w = seg_width(labels)
+    w = seg_width(labels, icons)
     dl.add_rect_filled(p, imgui.ImVec2(p.x + w, p.y + h), U("track"), 7.0)
     changed, x = False, p.x + 2
     imgui.push_id(id_)
     for i, (opt, lab) in enumerate(zip(options, labels)):
-        iw = imgui.calc_text_size(lab).x + 22
+        icon = icons[i] if icons else None
+        iw = imgui.calc_text_size(lab).x + 22 + (fw if icon else 0)
         imgui.set_cursor_screen_pos(imgui.ImVec2(x, p.y))
         imgui.push_id(i)
         if imgui.invisible_button("##s", imgui.ImVec2(iw, h)) and value != opt:
@@ -155,8 +159,13 @@ def seg(id_, value, options, labels=None, tips=None):
         elif held:
             dl.add_rect_filled(a, b, U("pill_border", 0.6), 6.0)
         ts = imgui.calc_text_size(lab)
-        dl.add_text(imgui.ImVec2(x + (iw - ts.x) / 2, p.y + (h - ts.y) / 2),
-                    U("text") if (on or hov) else U("text_dim"), lab)
+        tx = x + (iw - ts.x - (fw if icon else 0)) / 2
+        if icon:
+            from .ui.flags import draw_flag
+            fh = imgui.get_font_size() * 0.75
+            draw_flag(dl, icon, tx, p.y + (h - fh) / 2, fh)
+            tx += fw
+        dl.add_text(imgui.ImVec2(tx, p.y + (h - ts.y) / 2), U("text") if (on or hov) else U("text_dim"), lab)
         x += iw
     imgui.pop_id()
     imgui.set_cursor_screen_pos(imgui.ImVec2(p.x + w, p.y))
@@ -164,11 +173,11 @@ def seg(id_, value, options, labels=None, tips=None):
     return changed, value
 
 
-def labeled_seg(label, id_, value, options, labels=None, tips=None):
+def labeled_seg(label, id_, value, options, labels=None, tips=None, icons=None):
     imgui.align_text_to_frame_padding()
     imgui.text_colored(C("text_dim"), label)
     imgui.same_line(0, 6)
-    return seg(id_, value, options, labels, tips)
+    return seg(id_, value, options, labels, tips, icons)
 
 
 def primary_button(label, disabled=False, why=""):
@@ -205,6 +214,13 @@ ICON_PEN = "\uf304"
 ICON_STAR = "\uf005"
 ICON_STOP = "\uf04d"       # stop (square)
 ICON_EXPAND = "\uf31e"     # up-right-and-down-left-from-center
+ICON_GEAR = "\uf013"
+ICON_MIN = "\uf2d1"        # window-minimize
+ICON_MAX = "\uf2d0"        # window-maximize
+ICON_RESTORE = "\uf2d2"    # window-restore
+ICON_TAG = "\uf02b"
+ICON_CARET = "\uf0d7"      # caret-down
+ICON_SEARCH = "\uf002"
 
 
 def clear_x(id_, tip_text="Clear"):

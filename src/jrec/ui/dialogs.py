@@ -92,8 +92,8 @@ def _settings_rows(app):
         return render
 
     def test_row(t, d):
-        imgui.text(t)
-        th.small(d)
+        hl(app, t)
+        hl(app, d, small=True)
         if th.button("Test connection"):
             app.llm_test = "Checking…"
             threading.Thread(target=_test_llm, args=(app, dict(prof)), daemon=True).start()
@@ -114,8 +114,8 @@ def _settings_rows(app):
         return render
 
     def jev_test_row(t, d):
-        imgui.text(t)
-        th.small(d)
+        hl(app, t)
+        hl(app, d, small=True)
         if th.button("Test jev"):
             app.jev_test = "Checking…"
             threading.Thread(target=_test_jev, args=(app, dict(app.cfg.jev)), daemon=True).start()
@@ -127,7 +127,7 @@ def _settings_rows(app):
 
     def info_row(text):
         def render(t, d):
-            imgui.text(t)
+            hl(app, t)
             imgui.push_text_wrap_pos(0)
             th.small(text)
             imgui.pop_text_wrap_pos()
@@ -205,7 +205,7 @@ def settings(app):
         imgui.set_keyboard_focus_here()
         app.settings_focus = False
     imgui.set_next_item_width(-1 if not app.settings_query else imgui.get_content_region_avail().x - 30)
-    _, app.settings_query = imgui.input_text_with_hint("##sq", "Search settings", app.settings_query)
+    _, app.settings_query = imgui.input_text_with_hint("##sq", "Search settings (Ctrl+P)", app.settings_query)
     if app.settings_query and th.clear_x("sq", "Clear the search"):
         app.settings_query = ""
     q = app.settings_query.strip().lower()
@@ -256,12 +256,30 @@ def _test_jev(app, jev):
         app.jev_test = f"Not reachable: {str(e)[:80]}"
 
 
+def hl(app, text, small=False):
+    """Text with the settings search match highlighted (yellow wash behind the matched words)."""
+    if small:
+        imgui.push_font(None, imgui.get_style().font_size_base * 0.88)
+    q = app.settings_query.strip().lower()
+    p = imgui.get_cursor_screen_pos()
+    low = text.lower()
+    if q and q in low:
+        i = low.index(q)
+        x0 = p.x + imgui.calc_text_size(text[:i]).x
+        x1 = x0 + imgui.calc_text_size(text[i:i + len(q)]).x
+        imgui.get_window_draw_list().add_rect_filled(imgui.ImVec2(x0 - 1, p.y), imgui.ImVec2(x1 + 1, p.y + imgui.get_text_line_height()),
+                                                     th.U("match", 0.45), 3.0)
+    imgui.text_colored(C("text_dim" if small else "text"), text)
+    if small:
+        imgui.pop_font()
+
+
 def setting_row(app, title_, desc, id_, value, options, labels=None):
     """Magpie row: title + one grey line on the left, segmented control on the right."""
     labels = labels or [str(o) for o in options]
     y0 = imgui.get_cursor_pos_y()
-    imgui.text(title_)
-    th.small(desc)
+    hl(app, title_)
+    hl(app, desc, small=True)
     y1 = imgui.get_cursor_pos_y()
     w = th.seg_width(labels)
     imgui.set_cursor_pos(imgui.ImVec2(imgui.get_window_width() - w - 14, y0 + (y1 - y0 - imgui.get_frame_height()) / 2 - 2))
@@ -274,8 +292,8 @@ def setting_row(app, title_, desc, id_, value, options, labels=None):
 def text_row(app, title_, desc, id_, buf, hint, width=300):
     """Row with an inline field on the right; returns (finished_editing, text). Saved when you leave the field."""
     y0 = imgui.get_cursor_pos_y()
-    imgui.text(title_)
-    th.small(desc)
+    hl(app, title_)
+    hl(app, desc, small=True)
     y1 = imgui.get_cursor_pos_y()
     w = width * app.prefs["text_size"]
     imgui.set_cursor_pos(imgui.ImVec2(imgui.get_window_width() - w - 14, y0 + (y1 - y0 - imgui.get_frame_height()) / 2 - 2))

@@ -57,6 +57,10 @@ CREATE TABLE IF NOT EXISTS row_speaker (   -- "only this row": overrides the voi
 CREATE TABLE IF NOT EXISTS insight (       -- people, places, contacts, times, important rows, relationships
   folder TEXT PRIMARY KEY, json TEXT NOT NULL, engine TEXT, created TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tag (           -- labels on talks ('conversation') and recordings ('source')
+  kind TEXT NOT NULL, target TEXT NOT NULL, tag TEXT NOT NULL, created TEXT NOT NULL,
+  PRIMARY KEY (kind, target, tag)
+);
 CREATE TABLE IF NOT EXISTS moment (        -- saved A-B ranges
   id INTEGER PRIMARY KEY, folder TEXT NOT NULL, a REAL NOT NULL, b REAL NOT NULL,
   abs_a TEXT NOT NULL, abs_b TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL
@@ -223,3 +227,26 @@ def save_insight(con, folder, d, engine):
 def get_insight(con, folder):
     r = con.execute("SELECT json FROM insight WHERE folder=?", (folder,)).fetchone()
     return json.loads(r[0]) if r else None
+
+
+# ---- tags
+def add_tag(con, kind, target, tag):
+    tag = " ".join(tag.split()).strip("#, ")
+    if tag:
+        con.execute("INSERT OR IGNORE INTO tag VALUES (?,?,?,?)", (kind, target, tag, now()))
+        con.commit()
+    return tag
+
+
+def remove_tag(con, kind, target, tag):
+    con.execute("DELETE FROM tag WHERE kind=? AND target=? AND tag=?", (kind, target, tag))
+    con.commit()
+
+
+def tags_for(con, kind, target):
+    return [r[0] for r in con.execute("SELECT tag FROM tag WHERE kind=? AND target=? ORDER BY created", (kind, target))]
+
+
+def all_tags(con):
+    """{tag: count} over talks and recordings."""
+    return {r[0]: r[1] for r in con.execute("SELECT tag, COUNT(*) FROM tag GROUP BY tag ORDER BY COUNT(*) DESC, tag")}

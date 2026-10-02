@@ -29,6 +29,7 @@ class Conversation:
         self.notes, self.names, self.translations = [], {}, {}   # translations: {lang: {seg: text}}
         self.row_names, self.moments = {}, []
         self.insight = None
+        self.tags, self.source_tags = [], []
         self.peaks, self.gain, self.verified = None, 1.0, None
 
     def reload(self, con):
@@ -47,6 +48,10 @@ class Conversation:
         self.row_names = db.row_speakers(con, self.name)
         self.moments = db.moments(con, self.name)
         self.insight = db.get_insight(con, self.name)
+        self.source_tags = sorted({t for p in self.manifest["parts"] for t in db.tags_for(con, "source", p["source_sha256"])})
+        own = db.tags_for(con, "conversation", self.name)
+        self.tags = own + [t for t in self.source_tags if t not in own]
+        self.own_tags = own
         self.translations = {lang: db.translations(con, self.name, lang, self.segments)
                              for lang in db.translated_langs(con, self.name)}
 
@@ -114,11 +119,11 @@ class Conversation:
     def notes_in(self, t0, t1):
         return [n for n in self.notes if t0 <= n["t"] < t1]
 
-    def matches(self, query, lang=None):
-        """Segment indices whose shown text (original, or translation in `lang`) contains query."""
-        q = query.strip().lower()
-        if not q:
+    def matches(self, q, lang=None):
+        """Row indices matching a query (jrec.query: words in any order, OR, NOT, ( ), "phrase", /regex/,
+        note: tag: by: time: …) over text, translations, notes, tags and speaker names."""
+        from .. import libsearch, query
+        node = query.parse(q)
+        if node is None:
             return []
-        tr = self.translations.get(lang, {}) if lang else {}
-        return [i for i, s in enumerate(self.segments)
-                if q in s["text"].lower() or q in tr.get(i, "").lower() or q in self.speaker(s, i).lower()]
+        return [i for i, row in libsearch.rows_of(self) if query.match(node, row)]

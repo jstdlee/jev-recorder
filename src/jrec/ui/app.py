@@ -22,7 +22,8 @@ from .. import db, ingest, search
 from .. import theme as th
 from ..theme import C, U
 from ..timeref import parse as parse_goto
-from . import anim, dialogs, insights, timeline, transcript
+from . import anim, dialogs, insights, timeline, transcript, window
+from .flags import LANG, draw_flag
 from .data import Conversation
 from .player import Player
 from .timeline import clamp_view, fmt_offset
@@ -32,6 +33,15 @@ FONT_CANDIDATES = ["/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
                    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"]
 THAI_FONTS = ["/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
               "/usr/share/fonts/opentype/noto/NotoSansThai-Regular.otf"]
+SEARCH_HELP = """Words in any order:  roof price
+Either:  roof OR 屋顶      Exclude:  -cheap   or   NOT cheap
+Group:  roof (price OR cost)      Exact phrase:  "next friday"
+Regular expression:  /\\d{4}\\s?\\d{4}/
+Only one field:  note:roof   tag:家庭   by:mum   lang:cantonese
+Time:  time:14:00-15:30   date:2025-10-03   after:2025-10-01   before:…
+Case, full/half width and Traditional/Simplified Chinese are ignored."""
+TRANSLATE_LANGS = ["English", "Chinese", "Cantonese", "Malay", "Indonesian", "Thai", "Vietnamese", "Japanese",
+                   "Korean", "Tamil", "Hindi", "Filipino"]
 STAGE_WEIGHT = {"asr": (0.0, 0.8), "align": (0.8, 0.1), "speakers": (0.9, 0.1), "summary": (0.0, 1.0),
                 "translate": (0.0, 1.0)}
 
@@ -72,6 +82,7 @@ class App:
         self.side_tab, self.person_open, self.rec_open = "conv", None, None
         self._cache, self.cache_dirty = {}, False
         self.right_tab = "insights"
+        self.tag_filter, self.tag_buf, self.settings_palette = set(), "", False
         self.view_tw, self._view_written = None, None
         self.progress_glide = anim.Glide()
         # recorder import
@@ -414,10 +425,16 @@ class App:
         imgui.set_next_window_size(vp.work_size)
         imgui.begin("main", None, imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.no_move
                     | imgui.WindowFlags_.no_saved_settings | imgui.WindowFlags_.no_bring_to_front_on_focus)
+        self.topbar()
         ts = self.prefs["text_size"]
-        with th.card("side", imgui.ImVec2(310 * ts, 0), padding=(10, 10)):
+        side_w = max(220.0, min(vp.work_size.x * 0.45, self.prefs.get("side_w", 310.0) * ts))
+        with th.card("side", imgui.ImVec2(side_w, 0), padding=(10, 10)):
             self.sidebar()
-        imgui.same_line(0, 14)
+        imgui.same_line(0, 0)
+        d = self.vsplit("split_side")
+        if d:
+            self.prefs["side_w"] = max(220.0, (side_w + d) / ts)
+        imgui.same_line(0, 0)
         imgui.push_style_color(imgui.Col_.child_bg, C("bg", 0.0))
         imgui.push_style_var(imgui.StyleVar_.child_border_size, 0)
         imgui.begin_child("main_area", imgui.ImVec2(0, 0))
@@ -440,12 +457,79 @@ class App:
         if self.quit:
             hello_imgui.get_runner_params().app_shall_exit = True
 
+    def vsplit(self, id_, height=0.0):
+        """A vertical divider you can drag sideways. Returns the drag distance this frame (0 if idle)."""
+        h = height or imgui.get_content_region_avail().y
+        p = imgui.get_cursor_screen_pos()
+        imgui.invisible_button(id_, imgui.ImVec2(14, h))
+        delta = 0.0
+        if imgui.is_item_hovered() or imgui.is_item_active():
+            imgui.set_mouse_cursor(imgui.MouseCursor_.resize_ew)
+            imgui.get_window_draw_list().add_rect_filled(imgui.ImVec2(p.x + 6, p.y + h * 0.4),
+                                                          imgui.ImVec2(p.x + 8, p.y + h * 0.6), U("pill_border"), 1.0)
+        if imgui.is_item_active():
+            delta = imgui.get_io().mouse_delta.x
+        if imgui.is_item_deactivated():
+            th.save_prefs(self.prefs)
+        return delta
+
+    # ------------------------------------------------------------ title bar (borderless window)
+    def topbar(self):
+        h = imgui.get_frame_height() + 10
+        w = imgui.get_content_region_avail().x
+        p = imgui.get_cursor_screen_pos()
+        # empty space of the bar moves the window; double-click maximizes
+        imgui.invisible_button("titlebar_drag", imgui.ImVec2(w, h))
+        if imgui.is_item_activated() and window.available():
+            window.drag_begin()
+        if imgui.is_item_active() and window.available():
+            window.drag_update()
+        if imgui.is_item_deactivated():
+            window.drag_end()
+        if imgui.is_item_hovered() and imgui.is_mouse_double_clicked(0) and window.available():
+            window.toggle_maximize()
+        dl = imgui.get_window_draw_list()
+        dl.add_text(imgui.ImVec2(p.x + 4, p.y + (h - imgui.get_font_size()) / 2), U("text"), "jev-recorder")
+        lib = str(self.cfg.library).replace(str(Path.home()), "~", 1)
+        x_lib = p.x + 14 + imgui.calc_text_size("jev-recorder").x
+        right_limit = p.x + (w - min(460.0, w * 0.36)) / 2 - 12 if self.proc_log else p.x + w - 200
+        dl.push_clip_rect(imgui.ImVec2(x_lib, p.y), imgui.ImVec2(right_limit, p.y + h), True)
+        dl.add_text(imgui.get_font(), imgui.get_font_size() * 0.86,
+                    imgui.ImVec2(x_lib, p.y + (h - imgui.get_font_size()) / 2 + 2), U("text_dim"), lib)
+        dl.pop_clip_rect()
+        # task queue chip in the middle
+        if self.proc_log:
+            cw = min(460.0, w * 0.36)
+            imgui.set_cursor_screen_pos(imgui.ImVec2(p.x + (w - cw) / 2, p.y + 4))
+            self.job_indicator(cw, h - 8)
+        # right: settings, minimize, maximize/restore, close
+        bw = h - 8
+        icons = [(th.ICON_GEAR, "Settings (Ctrl+,  ·  search: Ctrl+P)", lambda: setattr(self, "show_settings", True), None)]
+        if window.available():
+            icons += [(th.ICON_MIN, "Minimize", window.minimize, None),
+                      (th.ICON_RESTORE if window.maximized() else th.ICON_MAX, "Maximize / restore", window.toggle_maximize, None),
+                      (th.ICON_X, "Close", window.close, "danger")]
+        x = p.x + w - len(icons) * (bw + 4)
+        for k, (icon, tip_, fn, hover_col) in enumerate(icons):
+            imgui.set_cursor_screen_pos(imgui.ImVec2(x + k * (bw + 4), p.y + 4))
+            imgui.push_style_color(imgui.Col_.button, C("bg", 0.0))
+            if hover_col:
+                imgui.push_style_color(imgui.Col_.button_hovered, C(hover_col, 0.85))
+            if imgui.button(f"{icon}##tb{k}", imgui.ImVec2(bw, bw)):
+                fn()
+            imgui.pop_style_color(2 if hover_col else 1)
+            th.tip(tip_)
+        imgui.set_cursor_screen_pos(imgui.ImVec2(p.x, p.y + h + 2))
+
     def global_keys(self):
         io = imgui.get_io()
         K = imgui.Key
         ctrl = io.key_ctrl or io.key_super
         if ctrl and imgui.is_key_pressed(K.comma, False):
             self.show_settings = self.settings_focus = True
+        elif ctrl and imgui.is_key_pressed(K.p, False):          # settings search, matches highlighted
+            self.show_settings = self.settings_focus = True
+            self.settings_palette = True
         sizes = [0.9, 1.0, 1.1, 1.25, 1.5]
         cur = min(range(len(sizes)), key=lambda i: abs(sizes[i] - self.prefs["text_size"]))
         if ctrl and (imgui.is_key_pressed(K.equal, False) or imgui.is_key_pressed(K.keypad_add, False)):
@@ -498,21 +582,22 @@ class App:
 
     # ------------------------------------------------------------ sidebar
     def sidebar(self):
-        if self.proc_log:
-            self.job_indicator()
-        imgui.set_next_item_width(-1 if not self.query else imgui.get_content_region_avail().x - 30)
-        changed, self.query = imgui.input_text_with_hint("##q", "Search all transcripts", self.query)
+        imgui.set_next_item_width(imgui.get_content_region_avail().x - (58 if self.query else 28))
+        changed, self.query = imgui.input_text_with_hint("##q", "Search: roof (price OR 屋顶) -friday", self.query)
         if changed:
-            self.hits = search.search(self.con, self.query) if self.query.strip() else None
+            self.hits = self.run_search(self.query) if self.query.strip() else None
         if self.query and th.clear_x("q", "Clear the search"):
             self.query, self.hits = "", None
+        imgui.same_line(0, 4)
+        imgui.push_style_color(imgui.Col_.text, C("text_dim"))
+        imgui.button("?##qhelp")
+        imgui.pop_style_color()
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(SEARCH_HELP)
         n_new = sum(c.status == "cut" for c in self.convs)
         if th.button(f"Transcribe new ({n_new})" if n_new else "Transcribe new", disabled=self.job_busy or not n_new,
                      why="A job is already running" if self.job_busy else "Everything is transcribed"):
             self.start_processing()
-        imgui.same_line()
-        if th.button("Settings", help_="Appearance, playback, summaries and translation (Ctrl+,)"):
-            self.show_settings = True
         imgui.dummy(imgui.ImVec2(0, 2))
         _, self.side_tab = th.seg("sidetab", self.side_tab, ["conv", "people", "rec", "moments"],
                                   ["Talks", "People", "Recordings", "Moments"],
@@ -533,20 +618,51 @@ class App:
             self.side_conversations()
         imgui.end_child()
 
+    def run_search(self, q):
+        from .. import libsearch
+        try:
+            return libsearch.search(self.convs, q)
+        except Exception as e:        # a half-typed query must never break the window
+            self.flash = f"Search: {e}"
+            return []
+
     def side_hits(self):
         th.section(f"{len(self.hits)} result{'s' if len(self.hits) != 1 else ''}")
-        for i, h in enumerate(self.hits):
-            if self.list_row(f"hit{i}", h["text"], f"{h['abs_start'][:10]}  {h['abs_start'][11:19]}"
-                             + (f"  ·  {h['speaker']}" if h.get("speaker") else ""), False):
-                conv = next((c for c in self.convs if c.name == h["folder"]), None)
-                if conv:
-                    self.find = self.query
-                    self.select(conv, conv.t_of_abs(datetime.fromisoformat(h["abs_start"])))
-                    self.update_matches()
+        last = None
+        for k, (c, i, kind, note) in enumerate(self.hits):
+            if c is not last:
+                th.small(f"{c.speech_start:%a %-d %b  %H:%M}  ·  {c.title or 'Conversation'}"[:60])
+                last = c
+            if kind == "row":
+                s = c.segments[i]
+                title, sub = s["text"], f"{s['abs_start'][11:19]}  ·  {c.speaker(s, i)}"
+                t = s["_t0"]
+            else:
+                title, sub, t = note["text"], f"note  ·  {c.abs_at(note['t']):%H:%M:%S}", note["t"]
+            if self.list_row(f"hit{k}", title, sub, False):
+                self.find = self.query
+                self.select(c, t)
+                if i is not None:
+                    self.sel_row = (c.name, i)
+                self.update_matches()
         if not self.hits:
-            imgui.text_colored(C("text_dim"), "No transcript contains that.")
+            imgui.text_colored(C("text_dim"), "Nothing matches. Hover ? for the search syntax.")
 
     def side_conversations(self):
+        all_tags = self.cached("all_tags", lambda: db.all_tags(self.con))
+        if all_tags:
+            for k, (tag, n) in enumerate(list(all_tags.items())[:16]):
+                on = tag in self.tag_filter
+                if k:
+                    imgui.same_line(0, 4)
+                    if imgui.get_content_region_avail().x < imgui.calc_text_size(tag).x + 30:
+                        imgui.new_line()
+                imgui.push_style_color(imgui.Col_.button, C("accent", 0.30) if on else C("track"))
+                if imgui.small_button(f"#{tag}##tf{k}"):
+                    self.tag_filter ^= {tag}
+                imgui.pop_style_color()
+                th.tip(f"{n} talk(s)/recording(s). Click to show only these")
+            imgui.dummy(imgui.ImVec2(0, 2))
         if not self.convs:
             th.section("Library is empty")
             imgui.push_text_wrap_pos(0)
@@ -554,7 +670,11 @@ class App:
                                               "A copied folder can be imported with  jrec import <folder>.")
             imgui.pop_text_wrap_pos()
         day = None
+        from ..query import fold
+        want = {fold(t) for t in self.tag_filter}
         for c in self.convs:
+            if want and not want <= {fold(t) for t in c.tags}:
+                continue
             d = c.speech_start.strftime("%a %-d %b %Y")
             if d != day:
                 imgui.dummy(imgui.ImVec2(0, 4 if day else 0))
@@ -674,11 +794,11 @@ class App:
                             c.moments = db.moments(self.con, c.name)
                     imgui.end_popup()
 
-    def job_indicator(self):
+    def job_indicator(self, w=None, h=None):
         busy = self.job_busy
         p = imgui.get_cursor_screen_pos()
-        w = imgui.get_content_region_avail().x
-        h = imgui.get_font_size() * 2.6
+        w = w or imgui.get_content_region_avail().x
+        h = h or imgui.get_font_size() * 2.6
         if imgui.invisible_button("job_ind", imgui.ImVec2(w - (34 if busy else 0), h)):
             self.show_progress = True
         th.tip("Show progress")
@@ -703,10 +823,10 @@ class App:
         else:
             label, col = f"✓  {self.job_label}: done", U("ok")
         dl.push_clip_rect(p, imgui.ImVec2(p.x + w - 6, p.y + h), True)
-        dl.add_text(imgui.ImVec2(p.x + 10, p.y + 5), col, label)
+        dl.add_text(imgui.ImVec2(p.x + 10, p.y + 3), col, label)
         dl.pop_clip_rect()
         frac = self.job_overall_smooth()
-        by = p.y + h - 10
+        by = p.y + h - 7
         dl.add_rect_filled(imgui.ImVec2(p.x + 10, by), imgui.ImVec2(p.x + w - 10, by + 4), U("pill_border"), 2.0)
         dl.add_rect_filled(imgui.ImVec2(p.x + 10, by), imgui.ImVec2(p.x + 10 + (w - 20) * frac, by + 4),
                            U("danger" if self.job_exit else "accent"), 2.0)
@@ -747,6 +867,7 @@ class App:
         if c.manifest["seams"]:
             th.small(f"{len(c.manifest['seams'])} recorder file boundary(ies): a moment of audio may be missing there",
                      "warn")
+        self.tag_row(c)
         imgui.dummy(imgui.ImVec2(0, 2))
         self.actions(c)
         imgui.dummy(imgui.ImVec2(0, 2))
@@ -758,14 +879,18 @@ class App:
         imgui.dummy(imgui.ImVec2(0, 2))
         avail = imgui.get_content_region_avail()
         side = c.status != "cut"
-        sum_w = max(340.0 * ts, avail.x * 0.34) if side else 0
+        sum_w = max(280.0 * ts, min(avail.x - 400, avail.x * self.prefs.get("right_w", 0.34))) if side else 0
         imgui.begin_group()
         self.transcript_header(c, avail.x - sum_w - (14 if sum_w else 0))
         with th.card("transcript", imgui.ImVec2(avail.x - sum_w - (14 if sum_w else 0), 0), padding=(8, 6)):
             transcript.draw(self, c)
         imgui.end_group()
         if side:
-            imgui.same_line(0, 14)
+            imgui.same_line(0, 0)
+            d = self.vsplit("split_right")
+            if d:
+                self.prefs["right_w"] = max(0.15, min(0.7, (sum_w - d) / max(1.0, avail.x)))
+            imgui.same_line(0, 0)
             self.right_column(c)
 
     def right_column(self, c):
@@ -867,6 +992,55 @@ class App:
         if imgui.button("Copy"):
             imgui.set_clipboard_text(s["text"])
 
+    def tag_row(self, c):
+        """Tags on this talk (✕ removes) and on its recording; + adds, with suggestions in any language."""
+        imgui.text_colored(C("text_dim"), th.ICON_TAG)
+        for k, tag in enumerate(c.tags):
+            imgui.same_line(0, 6)
+            own = tag in c.own_tags
+            imgui.push_style_color(imgui.Col_.button, C("track"))
+            imgui.small_button(f"#{tag}##tag{k}")
+            imgui.pop_style_color()
+            th.tip("Tag on this talk" if own else "Tag on the original recording")
+            if own:
+                imgui.same_line(0, 0)
+                imgui.push_style_color(imgui.Col_.button, C("track"))
+                imgui.push_style_color(imgui.Col_.text, C("text_dim"))
+                if imgui.small_button(f"{th.ICON_X}##untag{k}"):
+                    db.remove_tag(self.con, "conversation", c.name, tag)
+                    c.reload(self.con)
+                    self._cache = {}
+                imgui.pop_style_color(2)
+        imgui.same_line(0, 8)
+        if imgui.small_button("+ tag"):
+            self.tag_buf = ""
+            imgui.open_popup("add_tag")
+        if imgui.begin_popup("add_tag"):
+            if imgui.is_window_appearing():
+                imgui.set_keyboard_focus_here()
+            imgui.set_next_item_width(240)
+            enter, self.tag_buf = imgui.input_text_with_hint("##tagin", "family, 装修, roof…", self.tag_buf,
+                                                             imgui.InputTextFlags_.enter_returns_true)
+            on_rec = imgui.small_button("Add to the recording")
+            th.tip("Tag the original recording instead (every talk cut from it shows it)")
+            from ..query import fold
+            q = fold(self.tag_buf.strip())
+            pick = None
+            for k, (tag, n) in enumerate(db.all_tags(self.con).items()):
+                if q in fold(tag) and tag not in c.tags:
+                    if imgui.selectable(f"#{tag}  ({n})##sug{k}", False)[0]:
+                        pick = tag
+            if (enter and self.tag_buf.strip()) or pick or (on_rec and self.tag_buf.strip()):
+                if on_rec:
+                    for p in {p["source_sha256"] for p in c.manifest["parts"]}:
+                        db.add_tag(self.con, "source", p, self.tag_buf)
+                else:
+                    db.add_tag(self.con, "conversation", c.name, pick or self.tag_buf)
+                c.reload(self.con)
+                self._cache = {}
+                imgui.close_current_popup()
+            imgui.end_popup()
+
     def actions(self, c):
         busy = self.job_busy
         why = "Another job is running; see the indicator on the left"
@@ -883,11 +1057,30 @@ class App:
                 self.start_job(["summarize", str(c.folder)], f"Summarising {c.speech_start:%H:%M}", [c.name])
             th.tip(f"Uses {self.cfg.llm_profile()['base_url']}; long talks are summarised in overlapping parts")
             imgui.same_line()
-            to = self.prefs["translate_to"]
-            done = len(c.translations.get(to, {})) >= len([s for s in c.segments if s["text"].strip()])
-            if th.button(f"Translate into {to}", disabled=busy or done,
-                         why=why if busy else f"Already in {to}; change the language in Settings"):
-                self.translate(c, to)
+            if th.button(f"Translate {th.ICON_CARET}", disabled=busy, why=why) or getattr(self, "open_tr_menu", False):
+                imgui.open_popup("translate_menu")
+                self.open_tr_menu = False
+            if imgui.begin_popup("translate_menu"):
+                th.small("Translate the whole transcript into")
+                n_rows = len([s for s in c.segments if s["text"].strip()])
+                fh = imgui.get_font_size() * 0.75
+                for L in TRANSLATE_LANGS:
+                    have = len(c.translations.get(L, {}))
+                    p = imgui.get_cursor_screen_pos()
+                    lh = imgui.get_text_line_height()
+                    clicked = imgui.selectable(f"##tr{L}", L == self.prefs["translate_to"], 0, imgui.ImVec2(220, lh))[0]
+                    dl = imgui.get_window_draw_list()
+                    draw_flag(dl, LANG.get(L, ("", "??"))[1], p.x + 2, p.y + (lh - fh) / 2, fh)
+                    dl.add_text(imgui.ImVec2(p.x + fh * 1.5 + 10, p.y), U("text"), L)
+                    status = "done" if have >= n_rows else f"{have}/{n_rows}" if have else ""
+                    if status:
+                        dl.add_text(imgui.ImVec2(p.x + 220 - imgui.calc_text_size(status).x, p.y), U("text_dim"), status)
+                    if clicked:
+                        self.set_pref("translate_to", L)
+                        if have < n_rows:
+                            self.translate(c, L)
+                        self.view_lang = L
+                imgui.end_popup()
         imgui.same_line()
         if th.button("Verify clips", help_="Re-check every clip byte for byte against the archived original"):
             from ..cutter import verify_folder
@@ -1098,9 +1291,13 @@ class App:
             return
         langs = [None] + sorted(c.translations)
         labels = ["Original"] + sorted(c.translations)
+        from collections import Counter
+        orig = Counter(s.get("lang") for s in c.segments).most_common(1)[0][0]
+        icons = [LANG.get(orig, ("", "??"))[1]] + [LANG.get(L, ("", "??"))[1] for L in labels[1:]]
         imgui.same_line(0, 12)
         ch, v = th.labeled_seg("Show", "vlang", self.view_lang, langs, labels,
-                               ["As spoken"] + [f"Translated into {L}; untranslated rows stay original" for L in labels[1:]])
+                               [f"As spoken (mostly {orig})"] + [f"Translated into {L}; untranslated rows stay original"
+                                                                 for L in labels[1:]], icons)
         if ch:
             self.view_lang = v
             self.row_lang = {k: x for k, x in self.row_lang.items() if k[0] != c.name}
@@ -1202,6 +1399,23 @@ class App:
         elif cmd == "size":
             self.prefs["text_size"] = float(arg)
             th.apply(self.prefs["theme"], float(arg))
+        elif cmd == "tag" and c:
+            db.add_tag(self.con, "conversation", c.name, arg)
+            c.reload(self.con)
+            self._cache = {}
+        elif cmd == "query":
+            self.query = arg
+            self.hits = self.run_search(arg)
+        elif cmd == "wintest":                 # exercise the title-bar window calls (tests)
+            ok = window.available()
+            window.toggle_maximize()
+            window.toggle_maximize()
+            window.drag_begin()
+            window.drag_update()
+            window.drag_end()
+            print(f"WINTEST available={ok} maximized={window.maximized()}", flush=True)
+        elif cmd == "trmenu":
+            self.open_tr_menu = True
         elif cmd == "righttab":
             self.right_tab = arg
         elif cmd == "tab":
@@ -1240,6 +1454,11 @@ def run(cfg, script=None):
     params = hello_imgui.RunnerParams()
     params.app_window_params.window_title = "jev-recorder"
     params.app_window_params.window_geometry.size = (1500, 950)
+    # our own title bar (jrec.ui.window): no system frame; hello_imgui keeps a resize grip in the corner
+    params.app_window_params.borderless = True
+    params.app_window_params.borderless_movable = False
+    params.app_window_params.borderless_resizable = True
+    params.app_window_params.borderless_closable = False
     params.imgui_window_params.default_imgui_window_type = hello_imgui.DefaultImGuiWindowType.no_default_window
     params.callbacks.show_gui = app.gui
     params.callbacks.load_additional_fonts = _load_fonts
