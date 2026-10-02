@@ -301,3 +301,71 @@ Optional: an OpenTimestamps proof of the manifest hash (shows the manifest exist
   vendors libglvnd).
 - **Parked:** vLLM backend (engine init hangs on GB10); Tamil LID -> Whisper fallback; Sony
   track-mark timestamps (needs a real TX660 file).
+
+## 10. Proposal: encrypted vault, size policy, lifelong scale (2026-10-02, awaiting decision)
+
+### 10.1 Vault: per-file encryption (recommended) vs a virtual disk image
+| | Per-file (age or GPG) | Virtual image (VeraCrypt / LUKS file) |
+|---|---|---|
+| Backup / offsite sync (R2 via s3vault) | incremental, file by file | one huge blob changes |
+| Corruption blast radius | one file | the whole image |
+| Open one clip quickly | decrypt only the bytes needed | mount everything |
+| Needs root / drivers | no | LUKS needs root; VeraCrypt needs a driver |
+| Leaks file sizes and count | yes (acceptable) | no |
+**Recommendation: per-file, with `age`** (modern, small, streaming, audited, scrypt
+passphrase or X25519 keys, YubiKey via age-plugin-yubikey). GPG works the same way and is
+fine if preferred, but it is heavier and its defaults are easier to get wrong.
+- Envelope keys: one random master key wrapped by the passphrase (plus a printed recovery
+  key). Changing the password re-wraps one key and re-encrypts nothing.
+- What gets encrypted: archive originals (`<sha256>.mp3.age`), transcripts and summaries,
+  and the SQLite index (SQLCipher, or decrypted into memory at unlock). Readable without
+  the key: only an opaque id and size, so nothing about content, people or places.
+- Clips become **virtual**. The manifest already holds byte ranges, so a clip is a range of
+  the decrypted original streamed into ffmpeg or the player. No clip files are stored, and
+  less is on disk.
+- Evidence hashes stay the **plaintext SHA-256** (what matters in court), with the
+  ciphertext hash kept for bit-rot checks.
+- **Decryption in memory:** decrypt into a pipe or `memfd` straight into ffmpeg, Qwen and
+  the player. Nothing plaintext is written to disk. Auto-lock after N minutes idle, and
+  zero the key buffers.
+- **"Shred on exit" is unreliable on SSD/NVMe** (wear-levelling, copy-on-write, TRIM), on
+  both Linux (`shred`) and Windows (`sdelete`, `cipher /w`). The real protection is: never
+  write plaintext (memfd/tmpfs), use encrypted or no swap, and keep OS full-disk encryption
+  as the base layer. Best-effort wiping of any temp file is still done.
+
+### 10.2 Size policy (predictable)
+- **Evidence originals are never transcoded** (the hash must stay valid). TX660 MP3 stays as is.
+- If a recorder writes WAV (635 MB/h stereo): store **FLAC** instead. It is lossless and
+  ~50-60 % of the size, and FLAC embeds an MD5 of the PCM samples, so it stays verifiable
+  sample-for-sample.
+- **Listening/access copy:** Opus, mono, speech-tuned. Size = bitrate × duration, so it is
+  exact and is shown before encoding: 16 kbps = 7.2 MB/h, 24 kbps = 10.8 MB/h, 32 kbps = 14.4 MB/h.
+- Optional tier, user decision: after N days, keep only the conversation windows (±10 min)
+  at full quality and the long silent stretches as low-bitrate Opus. Off by default.
+
+### 10.3 Lifelong / massive data: what else to plan for
+- **Volume:** 8 h/day of 192k MP3 is ~250 GB/year. Over 20 years that is 5 TB of originals
+  plus indexes. Plan storage tiers and 3-2-1 backups (local + second disk + encrypted
+  offsite), with scheduled **scrubbing** (re-hash everything monthly; bit rot is real).
+- **Re-processing:** models will keep improving. Keep transcripts **versioned per model**
+  (never overwrite); a new model re-runs in the background and old versions stay
+  citable. Manifests already record which model produced each transcript.
+- **Speaker identity across years:** enrol voices ("this is Mum"), with speaker embeddings
+  linking S1/S2 to named people across all recordings. Voice prints are biometric data:
+  keep them in the vault, delete on request.
+- **Semantic search + Q&A:** multilingual embeddings (e.g. Qwen3-Embedding-0.6B / bge-m3)
+  plus local-LLM answers that cite clock times ("what did the contractor promise about
+  the roof?").
+- **Time integrity:** drift tracking, DST and travel time zones (per-recording tz,
+  optional phone-GPS log), and signed manifests (ed25519 / minisign) plus OpenTimestamps
+  for chain of custody.
+- **Multi-device:** when two recorders capture the same event, align them by audio
+  cross-correlation, dedupe, and keep the best channel.
+- **Audio events and quality flags:** laughter, music/TV, traffic; clipping, wind, and
+  pocket rustle. Useful for browsing and for warning that recorder settings are wrong.
+- **Redaction:** export copies with PII bleeped (names, numbers), never touching originals.
+- **Retention and law:** recording-consent rules differ (SG/MY are generally one-party,
+  but check the context), per-conversation retention/delete with an audit log, and a
+  legal-hold flag.
+- **Formats that last:** MP3/FLAC/Opus + JSON + SQLite are all open. Export everything to
+  plain files at any time (no lock-in).
