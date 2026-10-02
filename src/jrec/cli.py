@@ -14,6 +14,9 @@
                                      title/summary/points/actions with clock-time citations
   jrec translate FOLDER --to LANG [--rows 1,2]
                                      translate transcript rows with the LLM (stored in the database)
+  jrec analyze FOLDER [--engine rules|llm|jev|check]
+                                     people, places, contacts, times, important rows, relationships
+  jrec resegment [FOLDER ...]        join rows that split one sentence (keeps a backup of the old transcript)
   jrec search QUERY                  full-text search over all transcripts
   jrec process [--no-diarization]    cut + transcribe + enhance + summarize everything new
   jrec watch                         on plug-in: read-only remount, scan, ask (Import/Skip), process
@@ -255,6 +258,50 @@ def cmd_translate(cfg, a):
     print(f"{len(out)} row(s) in {a.to}")
 
 
+def cmd_analyze(cfg, a):
+    from . import intel
+    con = db.connect(cfg.db_path)
+    f = Path(a.folder)
+    engine = a.engine or cfg.analysis.get("engine", "rules")
+    progress_line("file", 1, 1, f.name)
+    d = intel.analyze_folder(f, engine, cfg.llm_profile(), cfg.jev, con,
+                             progress=lambda st, d_, t: progress_line("step", st, d_, t))
+    counts = {k: len(v) for k, v in d.items() if isinstance(v, list)}
+    print(f"{f.name}: {engine}: {counts}  rules: { {k: len(v) for k, v in d['rules'].items()} }")
+
+
+def cmd_resegment(cfg, a):
+    import bisect
+    import shutil
+    from . import search, transcribe
+    con = db.connect(cfg.db_path)
+    folders = [Path(f) for f in a.folders] or [cfg.library / "conversations" / r["folder"] for r in
+                                               con.execute("SELECT folder FROM conversation WHERE status!='cut'")]
+    for f in folders:
+        tp = f / "transcript.json"
+        t = json.loads(tp.read_text())
+        old = t["segments"]
+        new = transcribe.merge_fragments(old)
+        if len(new) == len(old):
+            print(f"{f.name}: nothing to join")
+            continue
+        backup = f / f"transcript.before-resegment.{len(list(f.glob('transcript.before-resegment.*')))}.json"
+        shutil.copy2(tp, backup)
+        # per-row speaker names follow their row's start time
+        starts = [s["start"] for s in new]
+        moved = {}
+        for seg, name in db.row_speakers(con, f.name).items():
+            if seg < len(old):
+                moved[max(0, bisect.bisect_right(starts, old[seg]["start"] + 1e-6) - 1)] = name
+        con.execute("DELETE FROM row_speaker WHERE folder=?", (f.name,))
+        for seg, name in moved.items():
+            db.set_row_speaker(con, f.name, seg, name)
+        t["segments"] = new
+        tp.write_text(json.dumps(t, ensure_ascii=False, indent=1))
+        search.index_transcript(con, f)
+        print(f"{f.name}: {len(old)} -> {len(new)} rows (backup {backup.name})")
+
+
 def cmd_search(cfg, a):
     from . import search
     con = db.connect(cfg.db_path)
@@ -315,6 +362,8 @@ def main(argv=None):
     e = sub.add_parser("enhance"); e.add_argument("folders", nargs="*")
     sm = sub.add_parser("summarize"); sm.add_argument("folders", nargs="*"); sm.add_argument("--llm")
     q = sub.add_parser("search"); q.add_argument("query")
+    rs = sub.add_parser("resegment"); rs.add_argument("folders", nargs="*")
+    an = sub.add_parser("analyze"); an.add_argument("folder"); an.add_argument("--engine", choices=["rules", "llm", "jev", "check"])
     tr = sub.add_parser("translate"); tr.add_argument("folder"); tr.add_argument("--to", required=True)
     tr.add_argument("--rows"); tr.add_argument("--llm")
     pr = sub.add_parser("process"); pr.add_argument("--no-diarization", action="store_true")
@@ -324,7 +373,7 @@ def main(argv=None):
     cfg = config.load(a.config)
     {"devices": cmd_devices, "scan": cmd_scan, "import": cmd_import, "sources": cmd_sources,
      "cut": cmd_cut, "verify": cmd_verify, "transcribe": cmd_transcribe,
-     "enhance": cmd_enhance, "summarize": cmd_summarize, "search": cmd_search, "translate": cmd_translate,
+     "enhance": cmd_enhance, "summarize": cmd_summarize, "search": cmd_search, "translate": cmd_translate, "resegment": cmd_resegment, "analyze": cmd_analyze,
      "process": cmd_process, "watch": cmd_watch, "ui": cmd_ui}[a.cmd](cfg, a)
 
 

@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS speaker_name (
 CREATE TABLE IF NOT EXISTS row_speaker (   -- "only this row": overrides the voice's name for one row
   folder TEXT NOT NULL, seg INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY (folder, seg)
 );
+CREATE TABLE IF NOT EXISTS insight (       -- people, places, contacts, times, important rows, relationships
+  folder TEXT PRIMARY KEY, json TEXT NOT NULL, engine TEXT, created TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS moment (        -- saved A-B ranges
   id INTEGER PRIMARY KEY, folder TEXT NOT NULL, a REAL NOT NULL, b REAL NOT NULL,
   abs_a TEXT NOT NULL, abs_b TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL
@@ -204,3 +207,14 @@ def delete_moment(con, mid):
 
 def all_notes(con):
     return [dict(r) for r in con.execute("SELECT * FROM note ORDER BY abs")]
+
+
+def save_insight(con, folder, d, engine):
+    con.execute("INSERT OR REPLACE INTO insight (folder, json, engine, created) VALUES (?,?,?,?)",
+                (folder, json.dumps(d, ensure_ascii=False), engine, now()))
+    con.commit()
+
+
+def get_insight(con, folder):
+    r = con.execute("SELECT json FROM insight WHERE folder=?", (folder,)).fetchone()
+    return json.loads(r[0]) if r else None

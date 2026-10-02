@@ -29,6 +29,14 @@ max_tokens = 32768        # thinking models spend many tokens reasoning
 chunk_chars = 256000      # long transcripts are summarised in chunks of this many characters
 overlap_chars = 8000      # ... each repeating the end of the previous chunk for context
 # api_key_env = "MY_KEY"  # read the key from an environment variable
+
+# jev: Julia-1 choice scoring (/v1/systemone), used by `jrec analyze --engine jev|check`
+[jev]
+url = "http://127.0.0.1:8011"
+model = "julia-1"
+
+[analysis]
+engine = "rules"          # rules | llm | jev | check (llm extraction, jev checks each claim)
 """
 
 
@@ -50,11 +58,25 @@ class Config:
     devices: list
     llm: dict = field(default_factory=dict)
     path: Path | None = None          # the config file this came from (or the default location)
+    jev: dict = field(default_factory=lambda: {"url": "http://127.0.0.1:8011", "model": "julia-1"})
+    analysis: dict = field(default_factory=lambda: {"engine": "rules"})
 
     @property
     def llm_override_path(self):
         """LLM settings edited in the app: merged over [llm] from the config file."""
         return (self.path.parent if self.path else Path("~/.config/jrec").expanduser()) / "llm.json"
+
+    def save_section(self, section, values):
+        """Save app-edited values for 'jev' or 'analysis' into the override file."""
+        p = self.llm_override_path
+        try:
+            data = json.loads(p.read_text())
+        except (OSError, ValueError):
+            data = {}
+        data.setdefault(section, {}).update(values)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data, indent=1))
+        getattr(self, section).update(values)
 
     def save_llm(self, name, values, default=None):
         p = self.llm_override_path
@@ -93,13 +115,17 @@ def load(path=None):
     devices = [Device(**d) for d in data.get("device", [])] or \
               [Device(**d) for d in tomllib.loads(DEFAULT)["device"]]
     llm = data.get("llm") or tomllib.loads(DEFAULT)["llm"]
-    cfg = Config(Path(data.get("library", "~/jrec-library")).expanduser(), devices, llm, path)
+    base = tomllib.loads(DEFAULT)
+    cfg = Config(Path(data.get("library", "~/jrec-library")).expanduser(), devices, llm, path,
+                 {**base["jev"], **data.get("jev", {})}, {**base["analysis"], **data.get("analysis", {})})
     try:  # settings changed in the app win over the file
         over = json.loads(cfg.llm_override_path.read_text())
         for name, vals in over.get("profiles", {}).items():
             cfg.llm.setdefault("profiles", {}).setdefault(name, {}).update(vals)
         if over.get("default"):
             cfg.llm["default"] = over["default"]
+        cfg.jev.update(over.get("jev", {}))
+        cfg.analysis.update(over.get("analysis", {}))
     except (OSError, ValueError):
         pass
     return cfg

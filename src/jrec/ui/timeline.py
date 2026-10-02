@@ -9,6 +9,8 @@ from datetime import timedelta
 
 from imgui_bundle import imgui
 
+import numpy as np
+
 from .. import theme as th
 from ..theme import C, U
 from .data import PEAK_HZ
@@ -27,6 +29,31 @@ def fmt_offset(sec, sign=False):
     s = int(round(abs(sec)))
     txt = f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
     return (("-" if sec < 0 else "+") if sign else ("-" if sec < 0 else "")) + txt
+
+
+_wave_cache = {}
+
+
+def wave_columns(c, v0, v1, w):
+    """Min/max of the peaks inside each pixel column, gain applied and clipped to [-1, 1]."""
+    key = (id(c), round(v0, 3), round(v1, 3), w, c.gain)
+    if key in _wave_cache:
+        return _wave_cache[key]
+    mins, maxs = c.peaks
+    n = len(mins)
+    edges = np.minimum(n, (v0 + np.arange(w + 1) / max(1, w) * (v1 - v0)) * PEAK_HZ).astype(np.int64)
+    starts = edges[:-1]
+    valid = starts < n
+    starts = np.where(valid, starts, n - 1)
+    end = max(int(edges[-1]), int(starts.max()) + 1)   # last column ends at the view's end, not the array's
+    lo = np.minimum.reduceat(mins[:end], starts)       # reduceat over [starts[i], starts[i+1])
+    hi = np.maximum.reduceat(maxs[:end], starts)
+    lo = np.clip(lo * c.gain, -1, 1)[valid]
+    hi = np.clip(hi * c.gain, -1, 1)[valid]
+    if len(_wave_cache) > 32:
+        _wave_cache.clear()
+    _wave_cache[key] = (lo.tolist(), hi.tolist())
+    return _wave_cache[key]
 
 
 def clamp_view(a, b, total):
@@ -63,27 +90,25 @@ def draw(app, c):
         a, b = app.range_ab
         dl.add_rect_filled(imgui.ImVec2(clipx(x_of(a)), wave_top), imgui.ImVec2(clipx(x_of(b)), wave_bot + h_lane),
                            U("accent", 0.20))
-        dl.add_rect_filled(imgui.ImVec2(clipx(x_of(a)), wave_top), imgui.ImVec2(clipx(x_of(b)), wave_top + 18 * ts),
+        dl.add_rect_filled(imgui.ImVec2(clipx(x_of(a)), wave_top), imgui.ImVec2(clipx(x_of(b)), wave_top + 26 * ts),
                            U("accent", 0.22))
+        for t in (a, b):   # edge handles: wide enough to grab
+            if v0 <= t <= v1:
+                dl.add_rect_filled(imgui.ImVec2(x_of(t) - 3, wave_top + 8 * ts), imgui.ImVec2(x_of(t) + 3, wave_top + 22 * ts),
+                                   U("accent"), 2.0)
         for t, lab in ((a, "A"), (b, "B")):
             if v0 <= t <= v1:
                 dl.add_line(imgui.ImVec2(x_of(t), wave_top), imgui.ImVec2(x_of(t), wave_bot + h_lane), U("accent"), 1.5)
                 dl.add_text(imgui.ImVec2(x_of(t) + 3, wave_top + 2), U("accent"), lab)
 
-    # waveform
+    # waveform: per-pixel min/max computed with numpy once per view, then cached
     if c.peaks is not None:
-        mins, maxs = c.peaks
-        mid, amp, g = (wave_top + wave_bot) / 2, (h_wave / 2 - 4) * c.gain, c.gain
+        lo, hi = wave_columns(c, v0, v1, int(w))
+        mid, amp = (wave_top + wave_bot) / 2, (h_wave / 2 - 4)
         col = U("wave")
-        n = len(mins)
-        for px in range(int(w)):
-            a = int((v0 + px / w * span) * PEAK_HZ)
-            b = max(a + 1, int((v0 + (px + 1) / w * span) * PEAK_HZ))
-            if a >= n:
-                break
-            lo = max(-1.0, float(mins[a:b].min()) * g) / g
-            hi = min(1.0, float(maxs[a:b].max()) * g) / g
-            dl.add_line(imgui.ImVec2(p0.x + px, mid - hi * amp), imgui.ImVec2(p0.x + px, mid - lo * amp + 1), col)
+        x0 = p0.x
+        for px in range(len(lo)):
+            dl.add_line(imgui.ImVec2(x0 + px, mid - hi[px] * amp), imgui.ImVec2(x0 + px, mid - lo[px] * amp + 1), col)
     else:
         dl.add_text(imgui.ImVec2(p0.x + 10, wave_top + 8), U("text_dim"), "Drawing the waveform…")
 
@@ -174,12 +199,13 @@ def draw(app, c):
         grab = None
         if app.range_ab and not io.key_shift:
             ra, rb = app.range_ab
-            if abs(mx - x_of(ra)) <= 6:
+            my = io.mouse_pos.y
+            if abs(mx - x_of(ra)) <= 10:
                 grab = "a"
-            elif abs(mx - x_of(rb)) <= 6:
+            elif abs(mx - x_of(rb)) <= 10:
                 grab = "b"
-            elif x_of(ra) < mx < x_of(rb) and io.mouse_pos.y <= wave_top + 18 * ts:
-                grab = "band"
+            elif x_of(ra) < mx < x_of(rb) and (my <= wave_top + 26 * ts or my >= wave_bot):
+                grab = "band"     # the top strip, or anywhere below the waveform (lanes, notes strip)
         if grab in ("a", "b"):
             imgui.set_mouse_cursor(imgui.MouseCursor_.resize_ew)
         elif grab == "band":
@@ -190,6 +216,9 @@ def draw(app, c):
         elif imgui.is_mouse_clicked(0):
             app.drag = {"x": mx, "view": app.view, "t": t_m, "select": io.key_shift, "grab": grab,
                         "range": app.range_ab}
+            if (grab or io.key_shift) and app.player.playing:
+                app.cursor = app.player.position() or app.cursor
+                app.player.stop()        # editing the range pauses; press Play to continue
         if imgui.is_mouse_clicked(1):
             app.ctx_t = t_m
             app.ctx_note = note_hover

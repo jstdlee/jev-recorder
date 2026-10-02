@@ -86,3 +86,14 @@ def test_listen_track_is_separate_and_manifest_untouched(tmp_path):
     assert out.stat().st_size > 0 and (folder / "manifest.json").read_bytes() == before
     info = json.loads((folder / "listen.json").read_text())
     assert info["from_parts"] == ["raw_01.mp3"] and "listening only" in info["purpose"]
+
+
+def test_merge_fragments_joins_split_sentences_only():
+    segs = [{"start": 0, "end": 5, "speaker": "S2", "lang": "Cantonese", "text": "最佳剪輯、最佳混", "words": []},
+            {"start": 5.3, "end": 7, "speaker": "S2", "lang": "Cantonese", "text": "音及最佳原著劇本獎。", "words": []},
+            {"start": 7.5, "end": 9, "speaker": "S2", "lang": "Cantonese", "text": "下一句。", "words": []},
+            {"start": 9.2, "end": 11, "speaker": "S1", "lang": "English", "text": "Then we go", "words": []},
+            {"start": 11.1, "end": 13, "speaker": "S1", "lang": "English", "text": "to the site.", "words": []}]
+    out = transcribe.merge_fragments(segs)
+    assert [s["text"] for s in out] == ["最佳剪輯、最佳混音及最佳原著劇本獎。", "下一句。", "Then we go to the site."]
+    assert out[0]["start"] == 0 and out[0]["end"] == 7

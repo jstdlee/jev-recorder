@@ -167,8 +167,10 @@ def settings(app):
     if app.settings_focus:
         imgui.set_keyboard_focus_here()
         app.settings_focus = False
-    imgui.set_next_item_width(-1)
+    imgui.set_next_item_width(-1 if not app.settings_query else imgui.get_content_region_avail().x - 30)
     _, app.settings_query = imgui.input_text_with_hint("##sq", "Search settings", app.settings_query)
+    if app.settings_query and th.clear_x("sq", "Clear the search"):
+        app.settings_query = ""
     q = app.settings_query.strip().lower()
     rows = [r for r in _settings_rows(app) if not q or q in (r[0] + " " + r[1] + " " + r[2]).lower()]
     imgui.push_style_color(imgui.Col_.child_bg, C("bg", 0.0))   # page background; the cards stand out
@@ -329,6 +331,7 @@ def note_editor(app):
         c.notes = db.notes(app.con, c.name)
         imgui.close_current_popup()
         app.note_edit = None
+        app._cache = {}
     imgui.same_line()
     if th.button("Cancel"):
         imgui.close_current_popup()
@@ -341,6 +344,7 @@ def note_editor(app):
             c.notes = db.notes(app.con, c.name)
             imgui.close_current_popup()
             app.note_edit = None
+            app._cache = {}
         imgui.pop_style_color()
     imgui.end_popup()
 
@@ -389,6 +393,7 @@ def speaker_editor(app):
                 db.set_row_speaker(app.con, c.name, row, "")
         c.names = db.speaker_names(app.con, c.name)
         c.row_names = db.row_speakers(app.con, c.name)
+        app._cache = {}
         imgui.close_current_popup()
         app.speaker_edit = None
     imgui.same_line()
@@ -421,6 +426,7 @@ def moment_editor(app):
         db.add_moment(app.con, c.name, me["a"], me["b"], c.abs_at(me["a"]).isoformat(), c.abs_at(me["b"]).isoformat(),
                       me["label"].strip())
         c.moments = db.moments(app.con, c.name)
+        app._cache = {}
         imgui.close_current_popup()
         app.moment_edit = None
     imgui.same_line()

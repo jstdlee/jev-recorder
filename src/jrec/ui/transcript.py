@@ -38,9 +38,16 @@ def draw(app, c):
     imgui.table_setup_column("By", imgui.TableColumnFlags_.width_fixed, 70 * ts)
     imgui.table_setup_column("Text", imgui.TableColumnFlags_.width_stretch, 3.0)
     imgui.table_setup_column("Notes", imgui.TableColumnFlags_.width_stretch, 1.0)
-    imgui.table_setup_column("", imgui.TableColumnFlags_.width_fixed, 44 * ts)
+    imgui.table_setup_column("", imgui.TableColumnFlags_.width_fixed, 46 * ts)
     imgui.table_headers_row()
     n = len(c.segments)
+    # notes grouped by row once per frame (not a scan per row)
+    notes_by_row = {}
+    starts = [x["_t0"] for x in c.segments]
+    import bisect
+    for nt in c.notes:
+        k = max(0, bisect.bisect_right(starts, nt["t"]) - 1)
+        notes_by_row.setdefault(k, []).append(nt)
     for i, s in enumerate(c.segments):
         t_next = c.segments[i + 1]["_t0"] if i + 1 < n else c.duration
         imgui.table_next_row()
@@ -90,24 +97,30 @@ def draw(app, c):
             imgui.text_colored(C("text"), text)
         else:
             imgui.text_wrapped(text)
-        # notes that fall inside this row's stretch of time (purple = yours)
+        # notes inside this row's stretch of time, wrapped, in purple (click one to edit)
         imgui.table_next_column()
-        imgui.push_style_color(imgui.Col_.text, C("note", 0.75))
-        imgui.push_style_color(imgui.Col_.button, C("note", 0.10))
-        if imgui.small_button("＋ Note"):
-            app.new_note(c, s["_t0"])
-        imgui.pop_style_color(2)
-        th.tip("Add a note at the start of this row (or press M at the playhead)")
-        for nt in c.notes_in(s["_t0"] if i else 0.0, t_next):
+        for nt in notes_by_row.get(i, ()):
             imgui.push_style_color(imgui.Col_.text, C("note"))
-            if imgui.selectable(f"{nt['text']}##n{nt['id']}", False, imgui.SelectableFlags_.allow_overlap)[0]:
-                app.edit_note(c, nt)
+            imgui.push_text_wrap_pos(0)
+            imgui.text_wrapped(nt["text"])
+            imgui.pop_text_wrap_pos()
             imgui.pop_style_color()
+            if imgui.is_item_clicked():
+                app.edit_note(c, nt)
             th.tip(f"Your note at {c.abs_at(nt['t']):%H:%M:%S}. Click to edit")
-        # open in a window
+        # icons: add a note, open the row
         imgui.table_next_column()
-        if imgui.small_button("Open"):
+        imgui.push_style_color(imgui.Col_.button, C("track", 0.0))
+        imgui.push_style_color(imgui.Col_.text, C("note"))
+        if imgui.small_button(f"{th.ICON_NOTE}##addnote"):
+            app.new_note(c, s["_t0"])
+        imgui.pop_style_color()
+        th.tip("Add a note to this row (M adds one at the playhead)")
+        imgui.same_line(0, 6)
+        imgui.push_style_color(imgui.Col_.text, C("text_dim"))
+        if imgui.small_button(f"{th.ICON_OPEN}##open"):
             app.open_row(c, i)
+        imgui.pop_style_color(2)
         th.tip("Open this row: full text, translation, notes, repeat")
         if (active and app.follow) or (app.scroll_to_t is not None and s["_t0"] <= app.scroll_to_t < t_next):
             imgui.set_scroll_here_y(0.35)

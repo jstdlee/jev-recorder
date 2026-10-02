@@ -69,6 +69,7 @@ class App:
         self.settings_query, self.settings_focus = "", False
         self.focus_find = self.focus_goto = False
         self.side_tab, self.person_open, self.rec_open = "conv", None, None
+        self._cache, self.cache_dirty = {}, False
         # recorder import
         self.recorders_seen, self.pending_import = set(), None
         self.import_msg, self.importing = "", False
@@ -84,6 +85,7 @@ class App:
 
     # ------------------------------------------------------------ data
     def reload(self):
+        self._cache = {}
         rows = self.con.execute("SELECT * FROM conversation ORDER BY speech_start DESC").fetchall()
         keep = {c.name: c for c in self.convs}
         out = []
@@ -345,6 +347,7 @@ class App:
 
     # ------------------------------------------------------------ frame
     def gui(self):
+        self.cache_dirty = False
         if self.need_reload:
             self.need_reload = False
             self.reload()
@@ -436,10 +439,12 @@ class App:
     def sidebar(self):
         if self.proc_log:
             self.job_indicator()
-        imgui.set_next_item_width(-1)
+        imgui.set_next_item_width(-1 if not self.query else imgui.get_content_region_avail().x - 30)
         changed, self.query = imgui.input_text_with_hint("##q", "Search all transcripts", self.query)
         if changed:
             self.hits = search.search(self.con, self.query) if self.query.strip() else None
+        if self.query and th.clear_x("q", "Clear the search"):
+            self.query, self.hits = "", None
         n_new = sum(c.status == "cut" for c in self.convs)
         if th.button(f"Transcribe new ({n_new})" if n_new else "Transcribe new", disabled=self.job_busy or not n_new,
                      why="A job is already running" if self.job_busy else "Everything is transcribed"):
@@ -502,8 +507,18 @@ class App:
                              c is self.sel):
                 self.select(c)
 
+    def cached(self, key, fn, ttl=2.0):
+        """Small TTL cache for sidebar lists that come from the database (not re-queried every frame)."""
+        hit = self._cache.get(key)
+        now = time.monotonic()
+        if hit and now - hit[0] < ttl and not self.cache_dirty:
+            return hit[1]
+        val = fn()
+        self._cache[key] = (now, val)
+        return val
+
     def side_people(self):
-        people = db.people(self.con)
+        people = self.cached("people", lambda: db.people(self.con))
         if not people:
             th.section("No names yet")
             imgui.push_text_wrap_pos(0)
@@ -531,7 +546,7 @@ class App:
                 imgui.unindent(10)
 
     def side_recordings(self):
-        rows = self.con.execute("SELECT * FROM source ORDER BY start DESC").fetchall()
+        rows = self.cached("sources", lambda: self.con.execute("SELECT * FROM source ORDER BY start DESC").fetchall(), 5.0)
         if not rows:
             th.section("No recordings imported")
             return
@@ -559,7 +574,8 @@ class App:
                 imgui.unindent(10)
 
     def side_moments(self):
-        items = [("note", n) for n in db.all_notes(self.con)] + [("moment", m) for m in db.moments(self.con)]
+        items = self.cached("moments", lambda: [("note", n) for n in db.all_notes(self.con)]
+                            + [("moment", m) for m in db.moments(self.con)])
         items.sort(key=lambda x: x[1]["abs"] if x[0] == "note" else x[1]["abs_a"], reverse=True)
         if not items:
             th.section("Nothing saved yet")
@@ -773,6 +789,8 @@ class App:
             if t is not None:
                 self.seek(c, t)
                 self.zoom(c, 1.0, t)
+        if self.goto_buf and th.clear_x("goto"):
+            self.goto_buf, self.goto_err = "", False
         # notes and A–B (wrapping onto a new line when the window is narrow)
         self._fit(imgui.calc_text_size("＋ Note").x + 24)
         imgui.push_style_color(imgui.Col_.button, C("note", 0.22))
@@ -800,10 +818,8 @@ class App:
                 self.loop = v
                 if v and playing:
                     self.player.play(c, a)
-            imgui.same_line(0, 4)
-            if imgui.button("Clear"):
+            if th.clear_x("ab", "Remove the A–B range (Esc)"):
                 self.range_ab, self.loop = None, False
-            th.tip("Remove the A–B range (Esc)")
             if self.range_ab:
                 imgui.same_line(0, 4)
                 if imgui.button("Save as moment"):
@@ -865,6 +881,9 @@ class App:
             self.update_matches()
         if enter:
             self.goto_match(1)
+        if self.find and th.clear_x("find", "Clear the search"):
+            self.find, self.match_pos = "", None
+            self.update_matches()
         imgui.same_line()
         n = len(self.match_idx)
         imgui.align_text_to_frame_padding()
@@ -1034,6 +1053,9 @@ def _load_fonts():
         thai = next((p for p in THAI_FONTS if Path(p).exists()), None)
         if thai:
             hello_imgui.load_font(thai, 15.0, hello_imgui.FontLoadingParams(merge_to_last_font=True))
+        # Font Awesome 6 (ships with imgui-bundle) for small icons: note, open, clear
+        fa = hello_imgui.FontLoadingParams(merge_to_last_font=True)
+        hello_imgui.load_font("fonts/Font_Awesome_6_Free-Solid-900.otf", 13.0, fa)
     else:
         hello_imgui.imgui_default_settings.load_default_font_with_font_awesome_icons()
 
@@ -1048,6 +1070,7 @@ def run(cfg, script=None):
     params.callbacks.load_additional_fonts = _load_fonts
     params.callbacks.setup_imgui_style = app.apply_theme
     params.fps_idling.enable_idling = True
+    params.fps_idling.fps_idle = 30          # idle but still snappy: a click shows within ~30 ms
     params.ini_disable = True
     # no MSAA: ImGui anti-aliases its own shapes, and Xvfb/Mesa (tests) has no multisample configs
     gl = hello_imgui.OpenGlOptions()

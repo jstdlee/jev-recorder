@@ -194,3 +194,21 @@ def button(label, disabled=False, why="", help_=""):
     elif help_:
         tip(help_)
     return pressed
+
+
+# Font Awesome 6 glyphs (merged into the main font)
+ICON_X = "\uf00d"        # xmark
+ICON_NOTE = "\uf249"     # note-sticky
+ICON_OPEN = "\uf065"     # expand
+ICON_PEN = "\uf304"
+
+
+def clear_x(id_, tip_text="Clear"):
+    """A small ✕ icon button drawn right after a field; returns True when pressed."""
+    imgui.same_line(0, 4)
+    imgui.push_style_color(imgui.Col_.button, C("track", 0.0))
+    imgui.push_style_color(imgui.Col_.text, C("text_dim"))
+    pressed = imgui.button(f"{ICON_X}##{id_}")
+    imgui.pop_style_color(2)
+    tip(tip_text)
+    return pressed

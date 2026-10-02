@@ -178,6 +178,28 @@ def build_segments(words, diar, max_gap=1.0, max_len=25.0, texts=None):
     return segs
 
 
+END_PUNCT = tuple("。！？!?…．.」』\"”")
+
+
+def merge_fragments(segs, max_gap=1.2, max_len=60.0):
+    """Join rows that split one sentence: same speaker and language, short gap, and the first
+    part does not end a sentence. Keeps whole sentences in one row (text wraps in the UI)."""
+    out = []
+    for s in segs:
+        p = out[-1] if out else None
+        if p and s.get("speaker") == p.get("speaker") and s.get("lang") == p.get("lang") \
+                and s["start"] - p["end"] <= max_gap and s["end"] - p["start"] <= max_len \
+                and not p["text"].rstrip().endswith(END_PUNCT):
+            p["text"] = _join([p["text"], s["text"]], p.get("lang"))
+            p["words"] = p.get("words", []) + s.get("words", [])
+            p["end"] = s["end"]
+            if "abs_end" in s:
+                p["abs_end"] = s["abs_end"]
+        else:
+            out.append(dict(s))
+    return out
+
+
 def _ts(t, sep=","):
     ms = int(round(t * 1000))
     return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d}{sep}{ms % 1000:03d}"
@@ -270,7 +292,7 @@ def transcribe_folder(folder, engine, use_diarization=True, log=print, diarizer=
         progress("speakers", 0, 1)
     diar = (diarizer or _nemotron)(audio) if use_diarization else []
     progress("speakers", 1, 1)
-    segs = build_segments(words, diar, texts={i: r.text for i, r in enumerate(res)})
+    segs = merge_fragments(build_segments(words, diar, texts={i: r.text for i, r in enumerate(res)}))
     meta = {"conversation": m["conversation"], "asr": ASR_MODEL, "aligners": [ALIGNER_MODEL, "MMS ctc-forced-aligner"],
             "diarization": diarize.MODEL if use_diarization else None, "language": lang, "language_counts": counts,
             "chunks": [[round(a, 2), round(b, 2)] for a, b in chunks],
