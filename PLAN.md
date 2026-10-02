@@ -281,3 +281,23 @@ Optional: an OpenTimestamps proof of the manifest hash (shows the manifest exist
 - **Ops:** the GB10 hard-reset twice when GPU jobs ran alongside a 20-core Blender render.
   CPU zones reached 95 °C, and the critical trip is 104 °C. Batch jobs run one at a time,
   under a thermal guard that pauses at 95 °C and resumes at 85 °C.
+
+## 9. Progress (2026-10-02)
+- **M1 done:** `jrec scan/import/sources`. Import is confirm-first, the archive is
+  read-only sha256, and TX660 start times are recovered to the second with flags.
+- **M2 done:** `jrec cut/verify`. Split files are stitched, there are 10 min pads, and each
+  clip is a byte-exact range of the original. The manifest carries a shell verify command
+  (checked by hand: it matches).
+- **M3 code done:** `jrec transcribe`. The flow is tested with a fake engine. **It has not
+  yet run on real models end-to-end** (the GPU run was stopped by the user).
+- **M4 done:** `jrec enhance` (DeepFilterNet3 -a 12 -> listen.opus).
+- **M5 done:** `jrec search` (FTS5 trigram, CJK-safe) and `jrec summarize` (OpenAI-compatible
+  profiles, cited clock times, chunk+merge). Tested against a fake server.
+- **Ops done:** `jrec watch` (read-only remount, Import/Skip notification, pipeline),
+  `jrec process`, and a thermal pause in the app (>= 90 C).
+- **M6 first version:** `jrec ui`, with a waveform timeline on an absolute clock, speaker
+  lanes, synced transcript, summary with time links, search, and an Import dialog. A
+  headless smoke test runs on Xvfb :99. `scripts/fix-imgui-gl.sh` is needed (the wheel
+  vendors libglvnd).
+- **Parked:** vLLM backend (engine init hangs on GB10); Tamil LID -> Whisper fallback; Sony
+  track-mark timestamps (needs a real TX660 file).

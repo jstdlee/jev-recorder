@@ -15,6 +15,7 @@
   jrec search QUERY                  full-text search over all transcripts
   jrec process [--no-diarization]    cut + transcribe + enhance + summarize everything new
   jrec watch                         on plug-in: read-only remount, scan, ask (Import/Skip), process
+  jrec ui [--ui-script STEPS]        desktop app: timeline, transcript, summary, import dialog
 """
 import argparse
 import json
@@ -36,6 +37,15 @@ def _fmt_dur(s):
         return "?"
     s = int(s)
     return f"{s//3600}:{s%3600//60:02d}:{s%60:02d}"
+
+
+def human_flag(f):
+    """'timeline_gap:31489923s' -> 'timeline gap 364d' (stored flags stay machine-readable)."""
+    name, _, val = f.partition(":")
+    if val.endswith("s") and val[:-1].lstrip("-").replace(".", "").isdigit():
+        v = abs(float(val[:-1]))
+        val = f"{v/86400:.0f}d" if v >= 86400 else f"{v/3600:.1f}h" if v >= 3600 else f"{v/60:.0f}m" if v >= 60 else f"{v:.0f}s"
+    return name.replace("_", " ") + (f" {val}" if val else "")
 
 
 def _pick(spec, n):
@@ -70,7 +80,7 @@ def _preview(cands):
     for i, c in enumerate(cands, 1):
         st = c.start
         when = f"{st.start:%Y-%m-%d %H:%M:%S%z} ({st.confidence})" if st else "?"
-        flags = ",".join(st.flags) if st and st.flags else ""
+        flags = ", ".join(human_flag(f) for f in st.flags) if st and st.flags else ""
         print(f"{i:>3}  {c.status:8} {c.rel[-34:]:34} {_fmt_size(c.size):>9} {_fmt_dur(c.duration):>8}  {when} {flags}")
 
 
@@ -235,6 +245,11 @@ def cmd_watch(cfg, a):
     watch.run(cfg, process_after=not a.no_process)
 
 
+def cmd_ui(cfg, a):
+    from . import ui
+    ui.run(cfg, a.ui_script)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="jrec", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config")
@@ -254,12 +269,13 @@ def main(argv=None):
     q = sub.add_parser("search"); q.add_argument("query")
     pr = sub.add_parser("process"); pr.add_argument("--no-diarization", action="store_true")
     wa = sub.add_parser("watch"); wa.add_argument("--no-process", action="store_true")
+    u = sub.add_parser("ui"); u.add_argument("--ui-script", help="e.g. open:0,wait:2.5,shot:/tmp/a.png (wait in seconds)")
     a = ap.parse_args(argv)
     cfg = config.load(a.config)
     {"devices": cmd_devices, "scan": cmd_scan, "import": cmd_import, "sources": cmd_sources,
      "cut": cmd_cut, "verify": cmd_verify, "transcribe": cmd_transcribe,
      "enhance": cmd_enhance, "summarize": cmd_summarize, "search": cmd_search,
-     "process": cmd_process, "watch": cmd_watch}[a.cmd](cfg, a)
+     "process": cmd_process, "watch": cmd_watch, "ui": cmd_ui}[a.cmd](cfg, a)
 
 
 if __name__ == "__main__":
