@@ -246,7 +246,10 @@ def cmd_watch(cfg, a):
 
 
 def cmd_ui(cfg, a):
+    import os
     from . import ui
+    if a.config:  # child jobs started from the UI use the same config
+        os.environ["JREC_CONFIG_PATH"] = str(Path(a.config).expanduser().resolve())
     ui.run(cfg, a.ui_script)
 
 

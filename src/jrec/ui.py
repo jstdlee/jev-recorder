@@ -158,6 +158,8 @@ class App:
         self.import_msg, self.importing = "", False
         # background processing
         self.proc, self.proc_log = None, []
+        self.job_label, self.job_t0 = "", 0.0
+        self.cfg_path = os.environ.get("JREC_CONFIG_PATH")
         self.script = [s.strip() for s in script.split(",")] if script else []
         self.script_wait = 0
         self.quit = False
@@ -229,19 +231,28 @@ class App:
             self.import_msg = f"import failed: {e}"
         self.importing = False
 
-    def start_processing(self):
-        if self.proc and self.proc.poll() is None:
+    def start_job(self, args, label):
+        """Run a jrec subcommand in a child process (GPU work never runs in the UI process)."""
+        if self.job_busy:
             return
-        cmd = [sys.executable, "-m", "jrec.cli"] + (["--config", os.environ["JREC_CONFIG"]]
-                                                    if os.environ.get("JREC_CONFIG") else []) + ["process"]
+        cmd = [sys.executable, "-m", "jrec.cli"] + (["--config", str(self.cfg_path)] if self.cfg_path else []) + args
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                     stdin=subprocess.DEVNULL, close_fds=True)
-        self.proc_log = [f"$ {shlex.join(cmd[2:])}"]
+                                     stdin=subprocess.DEVNULL, close_fds=True, cwd=str(Path.home()))
+        self.job_label, self.job_t0 = label, time.monotonic()
+        self.proc_log = [f"$ jrec {shlex.join(args)}"]
         threading.Thread(target=self._pump_log, daemon=True).start()
+
+    def start_processing(self):
+        self.start_job(["process"], "Transcribing all new conversations")
+
+    @property
+    def job_busy(self):
+        return self.proc is not None and self.proc.poll() is None
 
     def _pump_log(self):
         for line in self.proc.stdout:
-            if "warn" not in line.lower():
+            low = line.lower()
+            if "warn" not in low and "it/s]" not in low and "loading" not in low:
                 self.proc_log.append(line.rstrip())
                 self.proc_log = self.proc_log[-200:]
         self.proc_log.append(f"(finished, exit {self.proc.wait()})")
@@ -268,6 +279,7 @@ class App:
         if self.sel:
             self.conversation_view(self.sel)
         else:
+            self.job_bar()
             imgui.text_disabled("No conversation selected. Plug in the recorder, or pick one on the left.")
         imgui.end_child()
         self.import_dialog()
@@ -280,9 +292,10 @@ class App:
         changed, self.query = imgui.input_text_with_hint("##q", "Search transcripts…", self.query)
         if changed:
             self.hits = search.search(self.con, self.query) if self.query.strip() else None
-        busy = self.proc is not None and self.proc.poll() is None
-        if imgui.button("Processing…" if busy else "Process new"):
+        imgui.begin_disabled(self.job_busy)
+        if imgui.button("Transcribe all new"):
             self.start_processing()
+        imgui.end_disabled()
         imgui.same_line()
         if imgui.button("Reload"):
             self.reload()
@@ -316,13 +329,26 @@ class App:
             if imgui.selectable(f"{badge} {c.speech_start:%H:%M}  {mins:4.0f} min  {title[:34]}##{c.name}",
                                 c is self.sel)[0]:
                 self.select(c)
-        if self.proc_log:
-            imgui.separator()
-            imgui.text_disabled("processing log")
-            for line in self.proc_log[-8:]:
-                imgui.text_wrapped(line)
+
+    def job_bar(self):
+        if not self.proc_log:
+            return
+        busy = self.job_busy
+        dots = "." * (1 + int(time.monotonic() * 2) % 3)
+        last = next((l for l in reversed(self.proc_log) if l.strip()), "")
+        color = imgui.ImVec4(0.95, 0.8, 0.35, 1) if busy else imgui.ImVec4(0.5, 0.85, 0.5, 1)
+        imgui.text_colored(color, (f"{self.job_label}{dots} {time.monotonic() - self.job_t0:.0f}s" if busy
+                                   else f"{self.job_label}: done"))
+        imgui.same_line()
+        imgui.text_disabled(last[-140:])
+        if not busy:
+            imgui.same_line()
+            if imgui.small_button("dismiss"):
+                self.proc_log = []
+        imgui.separator()
 
     def conversation_view(self, c):
+        self.job_bar()
         imgui.text(c.title or c.name)
         imgui.text_disabled(f"{c.start:%Y-%m-%d}  clip {fmt_clock(c.start)}–{fmt_clock(c.end)}   "
                             f"speech {fmt_clock(c.abs_at(c.sp0))}–{fmt_clock(c.abs_at(c.sp1))}   "
@@ -336,6 +362,22 @@ class App:
         if c.manifest["seams"]:
             imgui.text_colored(imgui.ImVec4(0.95, 0.7, 0.3, 1),
                                f"{len(c.manifest['seams'])} file seam(s): audio may be missing at the recorder's split point")
+        if c.status == "cut":
+            imgui.begin_disabled(self.job_busy)
+            imgui.push_style_color(imgui.Col_.button, imgui.ImVec4(0.20, 0.42, 0.75, 1))
+            if imgui.button("Transcribe this conversation"):
+                self.start_job(["transcribe", str(c.folder)], f"Transcribing {c.name}")
+            imgui.pop_style_color()
+            imgui.end_disabled()
+            imgui.same_line()
+            imgui.text_disabled("Qwen3-ASR-1.7B + word times + speakers, on the GPU (~11 GB), about 1 min per 10 min of audio")
+        elif c.status == "transcribed":
+            imgui.begin_disabled(self.job_busy)
+            if imgui.button("Summarize"):
+                self.start_job(["summarize", str(c.folder)], f"Summarizing {c.name}")
+            imgui.end_disabled()
+            imgui.same_line()
+            imgui.text_disabled(f"uses LLM profile '{self.cfg.llm.get('default')}' ({self.cfg.llm_profile()['base_url']})")
         playing = self.player.playing and self.player.conv is c
         if imgui.button("Stop" if playing else "Play"):
             self.player.stop() if playing else self.player.play(c, self.cursor)
@@ -461,7 +503,7 @@ class App:
 
     def transcript(self, c):
         if not c.segments:
-            imgui.text_disabled("Not transcribed yet. Use “Process new”.")
+            imgui.text_disabled("Not transcribed yet: press “Transcribe this conversation” above.")
             return
         spk = sorted({s.get("speaker") for s in c.segments if s.get("speaker")})
         cur = self.player.position() if self.player.conv is c else None
