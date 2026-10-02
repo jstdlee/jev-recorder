@@ -28,6 +28,8 @@ def draw(app, c):
     cur = app.player.position() if app.player.conv is c and app.player.playing else None
     ts = app.prefs["text_size"]
     match_set = set(app.match_idx)
+    from .insights import important_rows
+    important = important_rows(c)
     flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.sizing_stretch_prop | imgui.TableFlags_.scroll_y \
         | imgui.TableFlags_.resizable
     if not imgui.begin_table("tr", 6, flags):
@@ -38,7 +40,7 @@ def draw(app, c):
     imgui.table_setup_column("By", imgui.TableColumnFlags_.width_fixed, 70 * ts)
     imgui.table_setup_column("Text", imgui.TableColumnFlags_.width_stretch, 3.0)
     imgui.table_setup_column("Notes", imgui.TableColumnFlags_.width_stretch, 1.0)
-    imgui.table_setup_column("", imgui.TableColumnFlags_.width_fixed, 46 * ts)
+    imgui.table_setup_column("", imgui.TableColumnFlags_.width_fixed, 62 * ts)
     imgui.table_headers_row()
     n = len(c.segments)
     # notes grouped by row once per frame (not a scan per row)
@@ -91,8 +93,12 @@ def draw(app, c):
                 app.rename_speaker(c, s["speaker"], i)
             imgui.pop_style_color()
             th.tip(f"Name who is speaking ({s['speaker']}). • = named for this row only")
-        # text
+        # text (★ = marked important by the analysis)
         imgui.table_next_column()
+        if i in important:
+            imgui.text_colored(C("match"), th.ICON_STAR)
+            th.tip(f"Important: {important[i]}")
+            imgui.same_line(0, 6)
         if lang != s.get("lang"):
             imgui.text_colored(C("text"), text)
         else:

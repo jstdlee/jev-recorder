@@ -28,6 +28,7 @@ class Conversation:
         self.segments, self.summary, self.title = [], None, None
         self.notes, self.names, self.translations = [], {}, {}   # translations: {lang: {seg: text}}
         self.row_names, self.moments = {}, []
+        self.insight = None
         self.peaks, self.gain, self.verified = None, 1.0, None
 
     def reload(self, con):
@@ -45,6 +46,7 @@ class Conversation:
         self.names = db.speaker_names(con, self.name)
         self.row_names = db.row_speakers(con, self.name)
         self.moments = db.moments(con, self.name)
+        self.insight = db.get_insight(con, self.name)
         self.translations = {lang: db.translations(con, self.name, lang, self.segments)
                              for lang in db.translated_langs(con, self.name)}
 

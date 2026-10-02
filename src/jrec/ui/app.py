@@ -22,7 +22,7 @@ from .. import db, ingest, search
 from .. import theme as th
 from ..theme import C, U
 from ..timeref import parse as parse_goto
-from . import dialogs, timeline, transcript
+from . import dialogs, insights, timeline, transcript
 from .data import Conversation
 from .player import Player
 from .timeline import clamp_view, fmt_offset
@@ -67,9 +67,11 @@ class App:
         self.row_view = self.note_edit = self.speaker_edit = self.moment_edit = None
         self.llm_edit, self.llm_test = {}, ""
         self.settings_query, self.settings_focus = "", False
+        self.jev_test = ""
         self.focus_find = self.focus_goto = False
         self.side_tab, self.person_open, self.rec_open = "conv", None, None
         self._cache, self.cache_dirty = {}, False
+        self.right_tab = "insights"
         # recorder import
         self.recorders_seen, self.pending_import = set(), None
         self.import_msg, self.importing = "", False
@@ -686,19 +688,28 @@ class App:
             timeline.draw(self, c)
         imgui.dummy(imgui.ImVec2(0, 2))
         avail = imgui.get_content_region_avail()
-        sum_w = max(300.0 * ts, avail.x * 0.28) if c.summary else 0
+        side = c.status != "cut"
+        sum_w = max(340.0 * ts, avail.x * 0.32) if side else 0
         imgui.begin_group()
         self.transcript_header(c, avail.x - sum_w - (14 if sum_w else 0))
         with th.card("transcript", imgui.ImVec2(avail.x - sum_w - (14 if sum_w else 0), 0), padding=(8, 6)):
             transcript.draw(self, c)
         imgui.end_group()
-        if c.summary:
+        if side:
             imgui.same_line(0, 14)
             imgui.begin_group()
-            th.section("Summary")
-            imgui.dummy(imgui.ImVec2(0, imgui.get_frame_height() - imgui.get_font_size() * 0.8 - 8))
-            with th.card("summary", imgui.ImVec2(0, 0)):
-                self.summary_panel(c)
+            _, self.right_tab = th.seg("righttab", self.right_tab, ["insights", "summary"], ["Insights", "Summary"],
+                                       ["People, places, contacts, times, relationships, important rows",
+                                        "Title, summary, key points and action items"])
+            with th.card("right", imgui.ImVec2(0, 0)):
+                if self.right_tab == "insights":
+                    insights.draw(self, c)
+                elif c.summary:
+                    self.summary_panel(c)
+                else:
+                    imgui.push_text_wrap_pos(0)
+                    imgui.text_colored(C("text_dim"), "No summary yet. Press Summarize above (needs the LLM server).")
+                    imgui.pop_text_wrap_pos()
             imgui.end_group()
 
     def actions(self, c):
@@ -1029,6 +1040,8 @@ class App:
         elif cmd == "size":
             self.prefs["text_size"] = float(arg)
             th.apply(self.prefs["theme"], float(arg))
+        elif cmd == "righttab":
+            self.right_tab = arg
         elif cmd == "tab":
             self.side_tab = arg
         elif cmd == "person":

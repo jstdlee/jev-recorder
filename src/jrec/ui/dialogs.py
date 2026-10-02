@@ -67,7 +67,7 @@ def _settings_rows(app):
               "axis": lambda: app.prefs["axis"], "dspeed": lambda: app.player.speed,
               "dskip": lambda: app.skip_silence, "dsound": lambda: app.player.sound,
               "chunk": lambda: int(prof.get("chunk_chars", 256000)), "overlap": lambda: int(prof.get("overlap_chars", 8000)),
-              "tto": lambda: app.prefs["translate_to"]}
+              "tto": lambda: app.prefs["translate_to"], "aeng": lambda: app.cfg.analysis.get("engine", "rules")}
 
     def set_skip(v):
         app.skip_silence = v
@@ -98,6 +98,28 @@ def _settings_rows(app):
             imgui.align_text_to_frame_padding()
             th.small(app.llm_test, "ok" if app.llm_test.startswith("Connected") else
                      "text_dim" if app.llm_test == "Checking…" else "danger")
+
+    def jev_field(key, hint):
+        def render(t, d):
+            k = "jev_" + key
+            buf = app.llm_edit.setdefault(k, str(app.cfg.jev.get(key, "") or ""))
+            done, buf = text_row(app, t, d, k, buf, hint)
+            app.llm_edit[k] = buf
+            if done and buf != str(app.cfg.jev.get(key, "") or ""):
+                app.cfg.save_section("jev", {key: buf})
+        return render
+
+    def jev_test_row(t, d):
+        imgui.text(t)
+        th.small(d)
+        if th.button("Test jev"):
+            app.jev_test = "Checking…"
+            threading.Thread(target=_test_jev, args=(app, dict(app.cfg.jev)), daemon=True).start()
+        if app.jev_test:
+            imgui.same_line()
+            imgui.align_text_to_frame_padding()
+            th.small(app.jev_test, "ok" if app.jev_test.startswith("Connected") else
+                     "text_dim" if app.jev_test == "Checking…" else "danger")
 
     def info_row(text):
         def render(t, d):
@@ -132,6 +154,13 @@ def _settings_rows(app):
         ("Summaries and translation", "Translate into", "Target language for the translate buttons",
          seg_row("tto", TRANSLATE_TARGETS, None, lambda v: app.set_pref("translate_to", v))),
         ("Summaries and translation", "Connection", "Check that the server answers", test_row),
+        ("Analysis", "Engine", "Rules work offline; LLM and jev need their servers",
+         seg_row("aeng", ["rules", "llm", "jev", "check"], ["Rules", "LLM", "jev", "LLM + jev"],
+                 lambda v: app.cfg.save_section("analysis", {"engine": v}))),
+        ("Analysis", "jev server", "Julia-1 /v1/systemone, for relationship scores and checking claims",
+         jev_field("url", "http://127.0.0.1:8011")),
+        ("Analysis", "jev model", "Model name the jev server expects", jev_field("model", "julia-1")),
+        ("Analysis", "jev connection", "Check that jev answers", jev_test_row),
         ("Library", "Folder", "Where recordings, clips and the database live", info_row(str(app.cfg.library))),
         ("Library", "Evidence", "What is never changed",
          info_row("Original recordings and clips are never changed. Notes, translations, names, moments and summaries "
@@ -208,6 +237,15 @@ def _test_llm(app, prof):
         app.llm_test = f"Connected: {', '.join(ids[:3]) or 'no models listed'}"
     except Exception as e:
         app.llm_test = f"Not reachable: {str(e)[:80]}"
+
+
+def _test_jev(app, jev):
+    try:
+        with urllib.request.urlopen(jev["url"].rstrip("/") + "/health", timeout=5) as r:
+            r.read()
+        app.jev_test = f"Connected to {jev['url']}"
+    except Exception as e:
+        app.jev_test = f"Not reachable: {str(e)[:80]}"
 
 
 def setting_row(app, title_, desc, id_, value, options, labels=None):

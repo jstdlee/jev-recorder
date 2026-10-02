@@ -201,6 +201,7 @@ ICON_X = "\uf00d"        # xmark
 ICON_NOTE = "\uf249"     # note-sticky
 ICON_OPEN = "\uf065"     # expand
 ICON_PEN = "\uf304"
+ICON_STAR = "\uf005"
 
 
 def clear_x(id_, tip_text="Clear"):
