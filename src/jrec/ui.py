@@ -21,6 +21,8 @@ import numpy as np
 from imgui_bundle import hello_imgui, imgui
 
 from . import config, db, ingest, search
+from . import theme as th
+from .theme import C, U
 
 PEAK_HZ = 50                      # waveform bins per second
 SPEAKER_COLORS = [(0.35, 0.62, 0.95), (0.95, 0.55, 0.30), (0.45, 0.80, 0.45), (0.85, 0.45, 0.80),
@@ -168,6 +170,7 @@ class App:
         self.convs, self.sel = [], None
         self.query, self.hits = "", None
         self.player = Player()
+        self.player.speed = float(th.load_prefs()["speed"])
         self.view = (0.0, 1.0)            # visible [t0, t1] seconds of the selected conversation
         self.follow = True
         self.cursor = 0.0
@@ -180,7 +183,11 @@ class App:
         self.proc, self.proc_log = None, []
         self.job_label, self.job_t0 = "", 0.0
         self.job_file, self.job_step = None, None   # (i, n, name), (stage, done, total)
-        self.skip_silence = True
+        self.prefs = th.load_prefs()
+        self.skip_silence = self.prefs["skip_silence"]
+        self.follow = self.prefs["follow"]
+        self.show_settings = False
+        self.job_exit = None
         self.cfg_path = os.environ.get("JREC_CONFIG_PATH")
         self.script = [s.strip() for s in script.split(",")] if script else []
         self.script_wait = 0
@@ -262,7 +269,7 @@ class App:
                                      stdin=subprocess.DEVNULL, close_fds=True, cwd=str(Path.home()))
         self.job_label, self.job_t0 = label, time.monotonic()
         self.proc_log = [f"$ jrec {shlex.join(args)}"]
-        self.job_file, self.job_step = None, None
+        self.job_file, self.job_step, self.job_exit = None, None, None
         threading.Thread(target=self._pump_log, daemon=True).start()
 
     def start_processing(self):
@@ -285,8 +292,20 @@ class App:
             if "warn" not in low and "it/s]" not in low and "loading" not in low:
                 self.proc_log.append(line.rstrip())
                 self.proc_log = self.proc_log[-200:]
-        self.proc_log.append(f"(finished, exit {self.proc.wait()})")
+        self.job_exit = self.proc.wait()
+        if self.job_exit:
+            self.proc_log.append(f"failed (exit {self.job_exit}); see the lines above")
         self.need_reload = True  # the SQLite connection belongs to the UI thread: reload there
+
+    # ---- prefs
+    def set_pref(self, key, value):
+        self.prefs[key] = value
+        th.save_prefs(self.prefs)
+        if key in ("theme", "text_size"):
+            th.apply(self.prefs["theme"], self.prefs["text_size"])
+
+    def apply_theme(self):
+        th.apply(self.prefs["theme"], self.prefs["text_size"])
 
     # ---- frame
     def gui(self):
@@ -294,180 +313,331 @@ class App:
             self.need_reload = False
             self.reload()
         self._run_script()
+        self.global_keys()
         vp = imgui.get_main_viewport()
         imgui.set_next_window_pos(vp.work_pos)
         imgui.set_next_window_size(vp.work_size)
         flags = (imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.no_move | imgui.WindowFlags_.no_saved_settings
                  | imgui.WindowFlags_.no_bring_to_front_on_focus)
         imgui.begin("main", None, flags)
-        left_w = 330
-        imgui.begin_child("left", imgui.ImVec2(left_w, 0), imgui.ChildFlags_.borders)
-        self.left_panel()
-        imgui.end_child()
-        imgui.same_line()
-        imgui.begin_child("right", imgui.ImVec2(0, 0))
+        side_w = 320 * self.prefs["text_size"]
+        with th.card("side", imgui.ImVec2(side_w, 0), padding=(10, 10)):
+            self.left_panel()
+        imgui.same_line(0, 14)
+        imgui.push_style_color(imgui.Col_.child_bg, C("bg", 0.0))
+        imgui.push_style_var(imgui.StyleVar_.child_border_size, 0)
+        imgui.begin_child("main_area", imgui.ImVec2(0, 0))
+        imgui.pop_style_var()
+        imgui.pop_style_color()
+        self.job_bar()
         if self.sel:
             self.conversation_view(self.sel)
         else:
-            self.job_bar()
-            imgui.text_disabled("No conversation selected. Plug in the recorder, or pick one on the left.")
+            imgui.dummy(imgui.ImVec2(0, 40))
+            imgui.text_colored(C("text_dim"), "Pick a conversation on the left, or plug in the recorder.")
         imgui.end_child()
+        self.settings_popup()
         self.import_dialog()
         imgui.end()
         if self.quit:
             hello_imgui.get_runner_params().app_shall_exit = True
 
+    def global_keys(self):
+        io = imgui.get_io()
+        ctrl = io.key_ctrl or io.key_super
+        K = imgui.Key
+        if ctrl and imgui.is_key_pressed(K.comma, False):
+            self.show_settings = True
+        sizes = [0.9, 1.0, 1.1, 1.25, 1.5]
+        cur = min(range(len(sizes)), key=lambda i: abs(sizes[i] - self.prefs["text_size"]))
+        if ctrl and (imgui.is_key_pressed(K.equal, False) or imgui.is_key_pressed(K.keypad_add, False)):
+            self.set_pref("text_size", sizes[min(len(sizes) - 1, cur + 1)])
+        elif ctrl and (imgui.is_key_pressed(K.minus, False) or imgui.is_key_pressed(K.keypad_subtract, False)):
+            self.set_pref("text_size", sizes[max(0, cur - 1)])
+        elif ctrl and imgui.is_key_pressed(K._0, False):
+            self.set_pref("text_size", 1.0)
+
     def left_panel(self):
         imgui.set_next_item_width(-1)
-        changed, self.query = imgui.input_text_with_hint("##q", "Search transcripts…", self.query)
+        changed, self.query = imgui.input_text_with_hint("##q", "Search transcripts", self.query)
         if changed:
             self.hits = search.search(self.con, self.query) if self.query.strip() else None
-        imgui.begin_disabled(self.job_busy)
-        if imgui.button("Transcribe all new"):
+        n_new = sum(c.status == "cut" for c in self.convs)
+        if th.button(f"Transcribe all new ({n_new})" if n_new else "Transcribe all new", disabled=self.job_busy or not n_new,
+                     why="A job is already running" if self.job_busy else "Everything is transcribed"):
             self.start_processing()
-        imgui.end_disabled()
         imgui.same_line()
-        if imgui.button("Reload"):
-            self.reload()
-        imgui.separator()
+        if th.button("Settings", help_="Appearance, text size, playback (Ctrl+,)"):
+            self.show_settings = True
+        imgui.dummy(imgui.ImVec2(0, 2))
+        imgui.begin_child("list", imgui.ImVec2(0, 0), 0)
         if self.hits is not None:
-            imgui.text_disabled(f"{len(self.hits)} hit(s)")
+            th.section(f"{len(self.hits)} results")
             for i, h in enumerate(self.hits):
-                label = f"{h['abs_start'][5:16].replace('T', ' ')}  {h['text'][:80]}##hit{i}"
-                if imgui.selectable(label, False)[0]:
+                if self.list_row(f"hit{i}", h["text"], f"{h['abs_start'][:10]}  {h['abs_start'][11:19]}"
+                                 + (f"  ·  {h['speaker']}" if h.get("speaker") else ""), False):
                     conv = next((c for c in self.convs if c.name == h["folder"]), None)
                     if conv:
-                        t = (datetime.fromisoformat(h["abs_start"]) - conv.start).total_seconds()
-                        self.select(conv, t)
+                        self.select(conv, (datetime.fromisoformat(h["abs_start"]) - conv.start).total_seconds())
+            if not self.hits:
+                imgui.text_colored(C("text_dim"), "No transcript contains that.")
+            imgui.end_child()
             return
         if not self.convs:
-            imgui.spacing()
-            imgui.text_wrapped("Library is empty.")
-            imgui.text_disabled(str(self.cfg.library))
-            imgui.spacing()
-            imgui.text_wrapped("Plug in the recorder: an Import dialog opens here. "
-                               "Or import a copied folder in a terminal:")
-            imgui.text_disabled("jrec import <folder>")
+            th.section("Library is empty")
+            imgui.push_text_wrap_pos(0)
+            imgui.text_colored(C("text_dim"), "Plug in the recorder: the import dialog opens here. "
+                                              "A copied folder can be imported with  jrec import <folder>.")
+            imgui.pop_text_wrap_pos()
         day = None
         for c in self.convs:
-            d = c.speech_start.strftime("%a %d %b %Y")
+            d = c.speech_start.strftime("%a %-d %b %Y")
             if d != day:
-                imgui.spacing(); imgui.text_disabled(d); day = d
+                imgui.dummy(imgui.ImVec2(0, 4 if day else 0))
+                th.section(d)
+                day = d
             mins = (c.sp1 - c.sp0) / 60
-            badge = {"cut": "○", "transcribed": "◐", "summarized": "●"}.get(c.status, "?")
-            title = c.title or "(not transcribed yet)"
-            if imgui.selectable(f"{badge} {c.speech_start:%H:%M}  {mins:4.0f} min  {title[:34]}##{c.name}",
-                                c is self.sel)[0]:
+            status = {"cut": "not transcribed", "transcribed": "transcribed", "summarized": "summarized"}.get(c.status, c.status)
+            title = c.title or f"Conversation at {c.speech_start:%H:%M}"
+            if self.list_row(c.name, title, f"{c.speech_start:%H:%M}  ·  {mins:.0f} min  ·  {status}", c is self.sel):
                 self.select(c)
+        imgui.end_child()
+
+    def list_row(self, id_, title, sub, selected):
+        """Two-line list row: title in text colour, details in grey; accent wash when selected."""
+        fs = imgui.get_font_size()
+        h = fs * 2.35 + 8
+        p = imgui.get_cursor_screen_pos()
+        w = imgui.get_content_region_avail().x
+        clicked = imgui.selectable(f"##{id_}", selected, 0, imgui.ImVec2(0, h))[0]
+        dl = imgui.get_window_draw_list()
+        dl.push_clip_rect(p, imgui.ImVec2(p.x + w - 4, p.y + h), True)
+        dl.add_text(imgui.ImVec2(p.x + 6, p.y + 4), U("text"), title)
+        dl.add_text(imgui.get_font(), fs * 0.86, imgui.ImVec2(p.x + 6, p.y + 6 + fs), U("text_dim"), sub)
+        dl.pop_clip_rect()
+        if imgui.calc_text_size(title).x > w - 10:
+            th.tip(title)
+        return clicked
 
     def job_bar(self):
         if not self.proc_log:
             return
         busy = self.job_busy
-        dots = "." * (1 + int(time.monotonic() * 2) % 3)
-        last = next((l for l in reversed(self.proc_log) if l.strip()), "")
-        color = imgui.ImVec4(0.95, 0.8, 0.35, 1) if busy else imgui.ImVec4(0.5, 0.85, 0.5, 1)
-        imgui.text_colored(color, (f"{self.job_label}{dots} {time.monotonic() - self.job_t0:.0f}s" if busy
-                                   else f"{self.job_label}: done"))
-        imgui.same_line()
-        imgui.text_disabled(last[-140:])
-        if busy and self.job_file:
-            i, n, name = self.job_file
-            stage, d, t = self.job_step or ("", 0, 1)
-            weight = {"asr": (0.0, 0.8), "align": (0.8, 0.1), "speakers": (0.9, 0.1)}.get(stage, (0.0, 0.0))
-            frac_file = weight[0] + weight[1] * (d / max(1, t))
-            if name == "loading-models":
-                imgui.progress_bar(0.0, imgui.ImVec2(-1, 0), "loading models (first run: 1-2 min)")
+        with th.card("job", imgui.ImVec2(0, 0), flags=imgui.ChildFlags_.auto_resize_y):
+            last = next((l for l in reversed(self.proc_log) if l.strip()), "")
+            if busy:
+                dots = "." * (1 + int(time.monotonic() * 2) % 3)
+                imgui.text(f"{self.job_label}{dots}")
+                imgui.same_line()
+                th.small(f"{time.monotonic() - self.job_t0:.0f} s")
+            elif self.job_exit:
+                imgui.text_colored(C("danger"), f"{self.job_label}: failed")
             else:
-                overall = ((i - 1) + frac_file) / max(1, n)
-                imgui.progress_bar(overall, imgui.ImVec2(-1, 0), f"overall: conversation {i} of {n}  ({overall*100:.0f}%)")
-                label = {"asr": f"speech to text: chunk {d} of {t}", "align": "word timings",
-                         "speakers": "who spoke when"}.get(stage, "preparing")
-                imgui.progress_bar(frac_file, imgui.ImVec2(-1, 0), f"{name}: {label}")
-        if not busy:
-            imgui.same_line()
-            if imgui.small_button("dismiss"):
-                self.proc_log = []
-        imgui.separator()
+                imgui.text_colored(C("ok"), f"{self.job_label}: done")
+            if not busy:
+                imgui.same_line(imgui.get_content_region_avail().x + imgui.get_cursor_pos_x() - 70)
+                if th.button("Dismiss"):
+                    self.proc_log = []
+            if busy and self.job_file:
+                i, n, name = self.job_file
+                stage, d, t = self.job_step or ("", 0, 1)
+                weight = {"asr": (0.0, 0.8), "align": (0.8, 0.1), "speakers": (0.9, 0.1)}.get(stage, (0.0, 0.0))
+                frac_file = weight[0] + weight[1] * (d / max(1, t))
+                if name == "loading-models":
+                    imgui.progress_bar(-1.0 * time.monotonic(), imgui.ImVec2(-1, 0), "Loading models (first run takes 1-2 min)")
+                else:
+                    overall = ((i - 1) + frac_file) / max(1, n)
+                    imgui.progress_bar(overall, imgui.ImVec2(-1, 0), f"Conversation {i} of {n}  ·  {overall*100:.0f}%")
+                    label = {"asr": f"Speech to text  ·  chunk {d} of {t}", "align": "Word timings",
+                             "speakers": "Who spoke when"}.get(stage, "Preparing")
+                    imgui.progress_bar(frac_file, imgui.ImVec2(-1, 0), label)
+            th.small(last[-160:], "danger" if self.job_exit else "text_dim")
+        imgui.dummy(imgui.ImVec2(0, 4))
 
     def conversation_view(self, c):
-        self.job_bar()
-        imgui.text(c.title or c.name)
-        imgui.text_disabled(f"{c.start:%Y-%m-%d}  clip {fmt_clock(c.start)}–{fmt_clock(c.end)}   "
-                            f"speech {fmt_clock(c.abs_at(c.sp0))}–{fmt_clock(c.abs_at(c.sp1))}   "
-                            f"{len(c.manifest['parts'])} part(s)   status: {c.status}")
+        # header
+        imgui.push_font(None, imgui.get_style().font_size_base * 1.3)
+        imgui.text(c.title or f"Conversation at {c.speech_start:%H:%M}")
+        imgui.pop_font()
+        mins = (c.sp1 - c.sp0) / 60
+        parts = len(c.manifest["parts"])
+        th.small(f"{c.speech_start:%a %-d %b %Y}  ·  talk {fmt_clock(c.abs_at(c.sp0))}–{fmt_clock(c.abs_at(c.sp1))} "
+                 f"({mins:.0f} min)  ·  kept {fmt_clock(c.start)}–{fmt_clock(c.end)} with 10 min either side"
+                 + (f"  ·  {parts} files" if parts > 1 else ""))
         from .cli import human_flag
         flags = sorted({human_flag(f) for p in c.manifest["parts"] for f in p["source_start"].get("flags", [])})
-        confs = {p["source_start"].get("confidence") for p in c.manifest["parts"]}
-        if flags or "high" not in confs:
-            imgui.text_colored(imgui.ImVec4(0.95, 0.7, 0.3, 1), f"time confidence {', '.join(c for c in confs if c)}"
-                               + (f"  flags: {', '.join(flags)}" if flags else ""))
+        confs = {p["source_start"].get("confidence") for p in c.manifest["parts"]} - {None}
+        if flags or (confs and "high" not in confs):
+            th.small(f"Clock time is {', '.join(sorted(confs))} confidence" + (f": {', '.join(flags)}" if flags else ""), "warn")
         if c.manifest["seams"]:
-            imgui.text_colored(imgui.ImVec4(0.95, 0.7, 0.3, 1),
-                               f"{len(c.manifest['seams'])} file seam(s): audio may be missing at the recorder's split point")
+            th.small(f"{len(c.manifest['seams'])} file boundary(ies) from the recorder's auto-split: a moment of audio may be missing there", "warn")
+        imgui.dummy(imgui.ImVec2(0, 2))
+        # actions: one primary
         if c.status == "cut":
-            imgui.begin_disabled(self.job_busy)
-            imgui.push_style_color(imgui.Col_.button, imgui.ImVec4(0.20, 0.42, 0.75, 1))
-            if imgui.button("Transcribe this conversation"):
-                self.start_job(["transcribe", str(c.folder)], f"Transcribing {c.name}")
-            imgui.pop_style_color()
-            imgui.end_disabled()
+            if th.primary_button("Transcribe", disabled=self.job_busy, why="Another job is running; it starts when that one ends"):
+                self.start_job(["transcribe", str(c.folder)], f"Transcribing {c.speech_start:%H:%M}")
             imgui.same_line()
-            imgui.text_disabled("Qwen3-ASR-1.7B + word times + speakers, on the GPU (~11 GB), about 1 min per 10 min of audio")
+            imgui.align_text_to_frame_padding()
+            th.small("Speech to text, word timings and speakers, on the GPU (about 11 GB, ~1 min per 10 min of talk)")
         elif c.status == "transcribed":
-            imgui.begin_disabled(self.job_busy)
-            if imgui.button("Summarize"):
-                self.start_job(["summarize", str(c.folder)], f"Summarizing {c.name}")
-            imgui.end_disabled()
+            prof = self.cfg.llm_profile()
+            if th.button("Summarize", disabled=self.job_busy, why="Another job is running"):
+                self.start_job(["summarize", str(c.folder)], f"Summarizing {c.speech_start:%H:%M}")
             imgui.same_line()
-            imgui.text_disabled(f"uses LLM profile '{self.cfg.llm.get('default')}' ({self.cfg.llm_profile()['base_url']})")
-        playing = self.player.playing and self.player.conv is c
-        if imgui.button("Pause" if playing else "Play"):
-            self.toggle_play(c)
-        imgui.same_line()
-        if imgui.button("◀ speech"):
-            self.jump_speech(c, -1)
-        imgui.same_line()
-        if imgui.button("speech ▶"):
-            self.jump_speech(c, 1)
-        imgui.same_line()
-        imgui.text_disabled("speed")
-        for sp in (1.0, 1.25, 1.5, 2.0, 3.0):
+            imgui.align_text_to_frame_padding()
+            th.small(f"Uses the LLM at {prof['base_url']}")
+        if c.status != "cut":
             imgui.same_line()
-            active = abs(self.player.speed - sp) < 1e-6
-            if active:
-                imgui.push_style_color(imgui.Col_.button, imgui.ImVec4(0.20, 0.42, 0.75, 1))
-            if imgui.small_button(f"{sp:g}x"):
-                self.player.speed = sp
-                if playing:
-                    self.player.play(c, self.player.position() or self.cursor, sp)
-            if active:
-                imgui.pop_style_color()
-        imgui.same_line()
-        _, self.skip_silence = imgui.checkbox("skip silence", self.skip_silence)
-        imgui.same_line()
-        if imgui.button("Verify"):
+        if th.button("Verify clips", help_="Re-check every clip byte for byte against the archived original"):
             from .cutter import verify_folder
             c.verified = verify_folder(c.folder, self.cfg.archive)
         if c.verified is not None:
             imgui.same_line()
+            imgui.align_text_to_frame_padding()
             if c.verified:
-                imgui.text_colored(imgui.ImVec4(1, 0.3, 0.3, 1), "FAILED: " + "; ".join(c.verified))
+                th.small("Verification failed: " + "; ".join(c.verified), "danger")
             else:
-                imgui.text_colored(imgui.ImVec4(0.4, 0.9, 0.4, 1), "verified: clips match the archived originals")
-        imgui.same_line()
-        _, self.follow = imgui.checkbox("follow playhead", self.follow)
-        self.timeline(c)
+                th.small("Clips match the archived originals", "ok")
+        imgui.dummy(imgui.ImVec2(0, 2))
+        # player card: controls + timeline
+        with th.card("player", imgui.ImVec2(0, 0), flags=imgui.ChildFlags_.auto_resize_y):
+            self.player_controls(c)
+            self.timeline(c)
+        imgui.dummy(imgui.ImVec2(0, 2))
+        # transcript + summary
         avail = imgui.get_content_region_avail()
-        sum_w = 360 if c.summary else 0
-        imgui.begin_child("transcript", imgui.ImVec2(avail.x - sum_w - (8 if sum_w else 0), 0), imgui.ChildFlags_.borders)
-        self.transcript(c)
-        imgui.end_child()
+        sum_w = max(300.0, avail.x * 0.30) if c.summary else 0
+        imgui.begin_group()
+        th.section("Transcript")
+        with th.card("transcript", imgui.ImVec2(avail.x - sum_w - (14 if sum_w else 0), 0), padding=(10, 8)):
+            self.transcript(c)
+        imgui.end_group()
         if c.summary:
-            imgui.same_line()
-            imgui.begin_child("summary", imgui.ImVec2(0, 0), imgui.ChildFlags_.borders)
-            self.summary_panel(c)
-            imgui.end_child()
+            imgui.same_line(0, 14)
+            imgui.begin_group()
+            th.section("Summary")
+            with th.card("summary", imgui.ImVec2(0, 0)):
+                self.summary_panel(c)
+            imgui.end_group()
+
+    @staticmethod
+    def _next_group(label, labels, gap=18):
+        """Continue on this line if the next labelled segmented group fits, else start a new line."""
+        need = imgui.calc_text_size(label).x + 6 + th.seg_width(labels)
+        imgui.same_line(0, gap)
+        if imgui.get_content_region_avail().x < need:
+            imgui.new_line()
+
+    def player_controls(self, c):
+        playing = self.player.playing and self.player.conv is c
+        imgui.push_style_var(imgui.StyleVar_.button_text_align, imgui.ImVec2(0.5, 0.5))
+        if imgui.button("Pause" if playing else "Play", imgui.ImVec2(70 * self.prefs["text_size"], 0)):
+            self.toggle_play(c)
+        imgui.pop_style_var()
+        th.tip("Space")
+        imgui.same_line()
+        if imgui.button("◀"):
+            self.jump_speech(c, -1)
+        th.tip("Previous speech (P)")
+        imgui.same_line(0, 4)
+        if imgui.button("▶"):
+            self.jump_speech(c, 1)
+        th.tip("Next speech (N)  ·  ← → move 5 s")
+        imgui.same_line()
+        pos = self.player.position() if playing else self.cursor
+        imgui.align_text_to_frame_padding()
+        imgui.text(fmt_clock(c.abs_at(pos or 0.0)))
+        self._next_group("Speed", ["1×", "1.25×", "1.5×", "2×", "3×"])
+        ch, sp = th.labeled_seg("Speed", "speed", self.player.speed, [1.0, 1.25, 1.5, 2.0, 3.0],
+                                ["1×", "1.25×", "1.5×", "2×", "3×"])
+        if ch:
+            self.player.speed = sp
+            self.set_pref("speed", sp)
+            if playing:
+                self.player.play(c, self.player.position() or self.cursor, sp)
+        self._next_group("Skip silence", ["Off", "On"])
+        ch, v = th.labeled_seg("Skip silence", "skip", self.skip_silence, [False, True], ["Off", "On"],
+                               ["Play every second", "Jump over quiet gaps longer than 3 s while playing"])
+        if ch:
+            self.skip_silence = v
+            self.set_pref("skip_silence", v)
+        self._next_group("Follow", ["Off", "On"])
+        ch, v = th.labeled_seg("Follow", "follow", self.follow, [False, True], ["Off", "On"],
+                               ["Keep the view still", "Scroll timeline and transcript with playback"])
+        if ch:
+            self.follow = v
+            self.set_pref("follow", v)
+        imgui.dummy(imgui.ImVec2(0, 2))
+
+    def settings_popup(self):
+        if self.show_settings and not imgui.is_popup_open("Settings"):
+            imgui.open_popup("Settings")
+        vp = imgui.get_main_viewport()
+        imgui.set_next_window_pos(imgui.ImVec2(vp.work_pos.x + vp.work_size.x / 2, vp.work_pos.y + vp.work_size.y / 3),
+                                  imgui.Cond_.appearing, imgui.ImVec2(0.5, 0.5))
+        imgui.set_next_window_size(imgui.ImVec2(620 * self.prefs["text_size"], 0))
+        imgui.push_style_color(imgui.Col_.popup_bg, C("bg"))
+        opened, keep = imgui.begin_popup_modal("Settings", True, imgui.WindowFlags_.no_saved_settings | imgui.WindowFlags_.no_title_bar)
+        imgui.pop_style_color()
+        if not opened:
+            self.show_settings = False
+            return
+        if imgui.is_key_pressed(imgui.Key.escape, False):
+            imgui.close_current_popup()
+            self.show_settings = False
+        th.section("Appearance")
+        with th.card("set_look", imgui.ImVec2(0, 0), flags=imgui.ChildFlags_.auto_resize_y):
+            ch, v = self.setting_row("Theme", "Dark or light; applies at once", "theme", self.prefs["theme"],
+                                     ["Dark", "Light"])
+            if ch:
+                self.set_pref("theme", v)
+            imgui.separator()
+            ch, v = self.setting_row("Text size", "Everything in the window; Ctrl+ Ctrl– Ctrl+0 too", "size",
+                                     self.prefs["text_size"], [1.0, 1.1, 1.25, 1.5], ["100%", "110%", "125%", "150%"])
+            if ch:
+                self.set_pref("text_size", v)
+        th.section("Playback")
+        with th.card("set_play", imgui.ImVec2(0, 0), flags=imgui.ChildFlags_.auto_resize_y):
+            ch, v = self.setting_row("Speed", "Pitch stays natural at every speed", "dspeed", self.player.speed,
+                                     [1.0, 1.25, 1.5, 2.0, 3.0], ["1×", "1.25×", "1.5×", "2×", "3×"])
+            if ch:
+                self.player.speed = v
+                self.set_pref("speed", v)
+            imgui.separator()
+            ch, v = self.setting_row("Skip silence", "Jump over quiet gaps longer than 3 s while playing", "dskip",
+                                     self.skip_silence, [False, True], ["Off", "On"])
+            if ch:
+                self.skip_silence = v
+                self.set_pref("skip_silence", v)
+        th.section("Library")
+        with th.card("set_lib", imgui.ImVec2(0, 0), flags=imgui.ChildFlags_.auto_resize_y):
+            imgui.text("Folder")
+            th.small(str(self.cfg.library))
+            imgui.separator()
+            imgui.text("Summaries")
+            prof = self.cfg.llm_profile()
+            th.small(f"{prof['base_url']}  ·  model {prof['model']}  ·  edit [llm.profiles] in the config file")
+        th.small("Changes are saved as you make them.")
+        imgui.dummy(imgui.ImVec2(0, 2))
+        if th.button("Done"):
+            imgui.close_current_popup()
+            self.show_settings = False
+        imgui.end_popup()
+
+    def setting_row(self, title, desc, id_, value, options, labels=None):
+        """Magpie row: title + one grey line on the left, segmented control on the right."""
+        labels = labels or [str(o) for o in options]
+        y0 = imgui.get_cursor_pos_y()
+        imgui.text(title)
+        th.small(desc)
+        y1 = imgui.get_cursor_pos_y()
+        w = th.seg_width(labels)
+        imgui.set_cursor_pos(imgui.ImVec2(imgui.get_window_width() - w - 14,
+                                          y0 + (y1 - y0 - imgui.get_frame_height()) / 2 - 2))
+        ch, v = th.seg(id_, value, options, labels)
+        imgui.set_cursor_pos(imgui.ImVec2(imgui.get_style().window_padding.x, y1))
+        imgui.dummy(imgui.ImVec2(0, 0))  # an item, so ImGui accepts the cursor move
+        return ch, v
 
     def toggle_play(self, c):
         if self.player.playing and self.player.conv is c:
@@ -506,7 +676,7 @@ class App:
     def timeline(self, c):
         self.keys(c)
         w = imgui.get_content_region_avail().x
-        h_wave, h_lanes, h_axis = 110, 34, 22
+        h_wave, h_lanes, h_axis = 104, 30, 20 * self.prefs["text_size"]
         h = h_wave + h_lanes + h_axis
         p0 = imgui.get_cursor_screen_pos()
         imgui.invisible_button("timeline", imgui.ImVec2(w, h))
@@ -516,25 +686,26 @@ class App:
         span = max(1e-3, v1 - v0)
         x_of = lambda t: p0.x + (t - v0) / span * w
         t_of = lambda x: v0 + (x - p0.x) / w * span
-        dl.add_rect_filled(p0, imgui.ImVec2(p0.x + w, p0.y + h_wave), imgui.IM_COL32(24, 26, 30, 255))
+        dl.add_rect_filled(p0, imgui.ImVec2(p0.x + w, p0.y + h_wave), U("track"), 6.0)
         # padding (outside the speech span) shaded, speech span marked
         for a, b in ((0.0, c.sp0), (c.sp1, c.duration)):
             if b > v0 and a < v1:
                 dl.add_rect_filled(imgui.ImVec2(max(p0.x, x_of(a)), p0.y), imgui.ImVec2(min(p0.x + w, x_of(b)), p0.y + h_wave),
-                                   imgui.IM_COL32(60, 60, 70, 110))
+                                   U("pad_shade", 0.85))
         # waveform
         if c.peaks is not None:
             mins, maxs = c.peaks
             mid, amp = p0.y + h_wave / 2, (h_wave / 2 - 4) * c.gain
+            wave = U("wave")
             for px in range(int(w)):
                 a, b = int((v0 + px / w * span) * PEAK_HZ), int((v0 + (px + 1) / w * span) * PEAK_HZ) + 1
                 if a >= len(mins):
                     break
                 lo, hi = max(-1.0, float(mins[a:b].min()) * c.gain) / c.gain, min(1.0, float(maxs[a:b].max()) * c.gain) / c.gain
                 dl.add_line(imgui.ImVec2(p0.x + px, mid - hi * amp), imgui.ImVec2(p0.x + px, mid - lo * amp + 1),
-                            imgui.IM_COL32(110, 170, 230, 255))
+                            wave)
         else:
-            dl.add_text(imgui.ImVec2(p0.x + 8, p0.y + 8), imgui.IM_COL32(150, 150, 150, 255), "loading waveform…")
+            dl.add_text(imgui.ImVec2(p0.x + 10, p0.y + 8), U("text_dim"), "Drawing the waveform…")
         # speaker lanes
         ly = p0.y + h_wave + 4
         spk = sorted({s.get("speaker") for s in c.segments if s.get("speaker")})
@@ -554,10 +725,10 @@ class App:
         k = (first.timestamp() // step + 1) * step
         while (tt := k - c.start.timestamp()) <= v1:
             x = x_of(tt)
-            dl.add_line(imgui.ImVec2(x, ay), imgui.ImVec2(x, ay + 5), imgui.IM_COL32(160, 160, 160, 255))
+            dl.add_line(imgui.ImVec2(x, ay), imgui.ImVec2(x, ay + 5), U("text_dim"))
             label = datetime.fromtimestamp(k, c.start.tzinfo).strftime("%H:%M:%S" if step < 60 else "%H:%M")
             if x + 3 + imgui.calc_text_size(label).x <= p0.x + w:
-                dl.add_text(imgui.ImVec2(x + 3, ay + 4), imgui.IM_COL32(170, 170, 170, 255), label)
+                dl.add_text(imgui.ImVec2(x + 3, ay + 4), U("text_dim"), label)
             k += step
         # playhead + cursor
         pos = self.player.position() if self.player.conv is c else None
@@ -576,7 +747,7 @@ class App:
                 self.view = (pos, min(c.duration, pos + span)) if pos + span <= c.duration else (c.duration - span, c.duration)
         cx = x_of(self.cursor)
         if p0.x <= cx <= p0.x + w:
-            dl.add_line(imgui.ImVec2(cx, p0.y), imgui.ImVec2(cx, ay), imgui.IM_COL32(255, 210, 80, 255), 2)
+            dl.add_line(imgui.ImVec2(cx, p0.y), imgui.ImVec2(cx, ay), U("playhead"), 2)
         # interaction: click = seek (+ play if playing), wheel = zoom at mouse, drag = pan
         io = imgui.get_io()
         if hovered:
@@ -609,22 +780,27 @@ class App:
 
     def transcript(self, c):
         if not c.segments:
-            imgui.text_disabled("Not transcribed yet: press “Transcribe this conversation” above.")
+            imgui.text_colored(C("text_dim"), "Not transcribed yet. Press Transcribe above.")
             return
         spk = sorted({s.get("speaker") for s in c.segments if s.get("speaker")})
         cur = self.player.position() if self.player.conv is c else None
-        flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.sizing_stretch_prop | imgui.TableFlags_.borders_inner_v
+        flags = imgui.TableFlags_.row_bg | imgui.TableFlags_.sizing_stretch_prop
+        ts = self.prefs["text_size"]
         if imgui.begin_table("tr", 3, flags):
-            imgui.table_setup_column("time", imgui.TableColumnFlags_.width_fixed, 70)
-            imgui.table_setup_column("who", imgui.TableColumnFlags_.width_fixed, 34)
+            imgui.table_setup_column("time", imgui.TableColumnFlags_.width_fixed, 66 * ts)
+            imgui.table_setup_column("who", imgui.TableColumnFlags_.width_fixed, 30 * ts)
             imgui.table_setup_column("text", imgui.TableColumnFlags_.width_stretch)
             for i, s in enumerate(c.segments):
                 imgui.table_next_row()
                 active = cur is not None and s["_t0"] <= cur < s["_t1"]
                 if active:
-                    imgui.table_set_bg_color(imgui.TableBgTarget_.row_bg1, imgui.IM_COL32(80, 70, 30, 160))
+                    imgui.table_set_bg_color(imgui.TableBgTarget_.row_bg1, U("playhead", 0.16))
                 imgui.table_next_column()
-                if imgui.selectable(f"{s['abs_start'][11:19]}##s{i}", False)[0]:
+                imgui.push_style_color(imgui.Col_.text, C("text_dim"))
+                clicked = imgui.selectable(f"{s['abs_start'][11:19]}##s{i}", False)[0]
+                imgui.pop_style_color()
+                th.tip("Play from here")
+                if clicked:
                     self.cursor = s["_t0"]
                     self.select(c, s["_t0"])
                     self.player.play(c, s["_t0"])
@@ -637,7 +813,7 @@ class App:
                 if (active and self.follow) or (self.scroll_to_cursor and s["_t0"] <= self.cursor < s["_t1"] + 2):
                     imgui.set_scroll_here_y(0.4)
                     if self.scroll_to_cursor and not active:
-                        imgui.table_set_bg_color(imgui.TableBgTarget_.row_bg1, imgui.IM_COL32(60, 70, 110, 160))
+                        imgui.table_set_bg_color(imgui.TableBgTarget_.row_bg1, U("accent", 0.16))
                         self.scroll_to_cursor = False
             imgui.end_table()
 
@@ -645,22 +821,28 @@ class App:
         sm = c.summary
         imgui.push_text_wrap_pos(0)
         imgui.text(sm.get("title", ""))
-        imgui.separator()
-        imgui.text_wrapped(sm.get("summary", ""))
+        imgui.dummy(imgui.ImVec2(0, 2))
+        imgui.text_colored(C("text_dim"), sm.get("summary", ""))
         for key, head in (("key_points", "Key points"), ("action_items", "Action items")):
             items = sm.get(key) or []
             if not items:
                 continue
-            imgui.spacing(); imgui.text_disabled(head)
+            imgui.dummy(imgui.ImVec2(0, 4))
+            th.section(head)
             for j, it in enumerate(items):
-                imgui.bullet()
-                imgui.text_wrapped(it["text"] + (f" — {it['owner']}" if it.get("owner") else ""))
+                imgui.text_wrapped(("☐ " if key == "action_items" else "•  ") + it["text"]
+                                   + (f"  — {it['owner']}" if it.get("owner") else "")
+                                   + (f", due {it['due']}" if it.get("due") else ""))
                 for k, tm in enumerate(it.get("times", [])):
-                    imgui.same_line()
+                    if k:
+                        imgui.same_line(0, 4)
                     if imgui.small_button(f"{tm}##{key}{j}_{k}"):
                         seg = next((s for s in c.segments if s["abs_start"][11:19] == tm), None)
                         if seg:
                             self.select(c, seg["_t0"]); self.player.play(c, seg["_t0"])
+                    th.tip("Play the moment this comes from")
+        imgui.dummy(imgui.ImVec2(0, 6))
+        th.small(f"Written by {sm.get('_meta', {}).get('model', 'the LLM')}; check it against the audio.")
         imgui.pop_text_wrap_pos()
 
     def import_dialog(self):
@@ -671,15 +853,17 @@ class App:
         imgui.set_next_window_size(imgui.ImVec2(min(1000, vp.work_size.x - 80), 0), imgui.Cond_.appearing)
         imgui.set_next_window_pos(imgui.ImVec2(vp.work_pos.x + vp.work_size.x / 2, vp.work_pos.y + vp.work_size.y / 3),
                                   imgui.Cond_.appearing, imgui.ImVec2(0.5, 0.5))
-        bg = imgui.get_style().color_(imgui.Col_.window_bg)
-        imgui.push_style_color(imgui.Col_.popup_bg, imgui.ImVec4(bg.x, bg.y, bg.z, 1.0))  # opaque: no text bleeding through
+        imgui.push_style_color(imgui.Col_.popup_bg, C("card"))  # opaque: no text bleeding through
         opened, _ = imgui.begin_popup_modal("Recorder connected", None, imgui.WindowFlags_.no_saved_settings)
         imgui.pop_style_color()
         if not opened:
             return
         if pi:
-            imgui.text(f"{pi['device'].name} at {pi['mount']}: {len(pi['cands'])} new recording(s)")
-            imgui.text_disabled("Mounted read-only. Nothing is copied until you press Import.")
+            imgui.push_font(None, imgui.get_style().font_size_base * 1.2)
+            imgui.text(f"{len(pi['cands'])} new recording{'s' if len(pi['cands']) != 1 else ''} on the {pi['device'].name}")
+            imgui.pop_font()
+            th.small(f"{pi['mount']}  ·  mounted read-only. Nothing is copied until you press Import.")
+            imgui.dummy(imgui.ImVec2(0, 2))
             # columns stretch to fill the dialog width exactly
             tflags = (imgui.TableFlags_.sizing_stretch_prop | imgui.TableFlags_.borders_inner_h | imgui.TableFlags_.row_bg
                       | imgui.TableFlags_.scroll_y)
@@ -703,24 +887,28 @@ class App:
             n = sum(pi["checked"])
             size = sum(c.size for c, k in zip(pi["cands"], pi["checked"]) if k)
             from .cli import _fmt_size
-            imgui.begin_disabled(self.importing or n == 0)
-            if imgui.button(f"Import {n} file(s) ({_fmt_size(size)})"):
-                items = [c for c, k in zip(pi["cands"], pi["checked"]) if k]
-                threading.Thread(target=self._do_import, args=(items, pi["device"], pi["serial"]), daemon=True).start()
-                pi["done"] = True
-            imgui.end_disabled()
-            imgui.same_line()
-            if imgui.button("Skip" if not pi.get("done") else "Close"):
-                self.pending_import = None
-                imgui.close_current_popup()
-            if pi.get("done") and not self.importing:
+            imgui.dummy(imgui.ImVec2(0, 4))
+            if not pi.get("done"):
+                if th.primary_button(f"Import {n} recording{'s' if n != 1 else ''} ({_fmt_size(size)})",
+                                     disabled=self.importing or n == 0, why="Tick at least one recording"):
+                    items = [c for c, k in zip(pi["cands"], pi["checked"]) if k]
+                    threading.Thread(target=self._do_import, args=(items, pi["device"], pi["serial"]), daemon=True).start()
+                    pi["done"] = True
                 imgui.same_line()
-                if imgui.button("Process now"):
+                if th.button("Skip"):
+                    self.pending_import = None
+                    imgui.close_current_popup()
+            else:
+                if th.primary_button("Transcribe now", disabled=self.importing, why="Still copying"):
                     self.start_processing()
                     self.pending_import = None
                     imgui.close_current_popup()
+                imgui.same_line()
+                if th.button("Close"):
+                    self.pending_import = None
+                    imgui.close_current_popup()
             if self.import_msg:
-                imgui.text_wrapped(self.import_msg)
+                th.small(self.import_msg, "danger" if "failed" in self.import_msg else "text_dim")
         imgui.end_popup()
 
     # ---- scripted runs for headless tests (never XTest)
@@ -754,6 +942,14 @@ class App:
             self.job_label, self.job_t0 = "Transcribing all new conversations", time.monotonic() - 42
             self.proc_log = ["[2/4] 2025-10-02_141213_19966260"]
             self.job_file, self.job_step = (int(i), int(n), "2025-10-02_141213_19966260"), (stage, int(d), int(t))
+        elif cmd == "theme":
+            self.prefs["theme"] = arg
+            th.apply(arg, self.prefs["text_size"])
+        elif cmd == "size":
+            self.prefs["text_size"] = float(arg)
+            th.apply(self.prefs["theme"], float(arg))
+        elif cmd == "settings":
+            self.show_settings = True
         elif cmd == "shot":
             self.shot_path = arg
             self.quit = True
@@ -764,10 +960,10 @@ class App:
 def _load_fonts():
     path = next((p for p in FONT_CANDIDATES if Path(p).exists()), None)
     if path:
-        hello_imgui.load_font(path, 17.0)
+        hello_imgui.load_font(path, 15.0)
         thai = next((p for p in THAI_FONTS if Path(p).exists()), None)
         if thai:
-            hello_imgui.load_font(thai, 17.0, hello_imgui.FontLoadingParams(merge_to_last_font=True))
+            hello_imgui.load_font(thai, 15.0, hello_imgui.FontLoadingParams(merge_to_last_font=True))
     else:
         hello_imgui.imgui_default_settings.load_default_font_with_font_awesome_icons()
 
@@ -778,8 +974,10 @@ def run(cfg, script=None):
     params = hello_imgui.RunnerParams()
     params.app_window_params.window_title = "jev-recorder"
     params.app_window_params.window_geometry.size = (1500, 950)
+    params.imgui_window_params.background_color = th.C("bg")
     params.imgui_window_params.default_imgui_window_type = hello_imgui.DefaultImGuiWindowType.no_default_window
     params.callbacks.show_gui = app.gui
+    params.callbacks.setup_imgui_style = app.apply_theme
     params.callbacks.load_additional_fonts = _load_fonts
     params.fps_idling.enable_idling = True
     params.ini_disable = True
