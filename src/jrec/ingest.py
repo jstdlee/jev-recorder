@@ -84,7 +84,7 @@ def scan(profile, mount, serial, con):
         if not base.is_dir():
             continue
         for p in sorted(base.rglob("*")):
-            rel = str(p.relative_to(mount))
+            rel = p.relative_to(mount).as_posix()      # same key on every OS
             if not p.is_file() or p.suffix.lower().lstrip(".") not in profile.extensions \
                     or any(part in profile.ignore for part in p.relative_to(mount).parts):
                 continue
