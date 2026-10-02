@@ -161,6 +161,7 @@ class App:
         self.script = [s.strip() for s in script.split(",")] if script else []
         self.script_wait = 0
         self.quit = False
+        self.need_reload = False
         self.reload()
         threading.Thread(target=self._watch_recorders, daemon=True).start()
 
@@ -223,6 +224,7 @@ class App:
                 self.import_msg = f"importing {i}/{len(items)}: {c.rel}"
                 ingest.import_one(c, d, serial, self.cfg, con)
             self.import_msg = f"imported {len(items)} file(s). The recorder was not modified; safe to eject."
+            self.need_reload = True
         except Exception as e:
             self.import_msg = f"import failed: {e}"
         self.importing = False
@@ -243,10 +245,13 @@ class App:
                 self.proc_log.append(line.rstrip())
                 self.proc_log = self.proc_log[-200:]
         self.proc_log.append(f"(finished, exit {self.proc.wait()})")
-        self.reload()
+        self.need_reload = True  # the SQLite connection belongs to the UI thread: reload there
 
     # ---- frame
     def gui(self):
+        if self.need_reload:
+            self.need_reload = False
+            self.reload()
         self._run_script()
         vp = imgui.get_main_viewport()
         imgui.set_next_window_pos(vp.work_pos)
@@ -292,6 +297,14 @@ class App:
                         t = (datetime.fromisoformat(h["abs_start"]) - conv.start).total_seconds()
                         self.select(conv, t)
             return
+        if not self.convs:
+            imgui.spacing()
+            imgui.text_wrapped("Library is empty.")
+            imgui.text_disabled(str(self.cfg.library))
+            imgui.spacing()
+            imgui.text_wrapped("Plug in the recorder: an Import dialog opens here. "
+                               "Or import a copied folder in a terminal:")
+            imgui.text_disabled("jrec import <folder>")
         day = None
         for c in self.convs:
             d = c.speech_start.strftime("%a %d %b %Y")
