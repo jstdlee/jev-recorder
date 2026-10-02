@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS translation (
 CREATE TABLE IF NOT EXISTS speaker_name (
   folder TEXT NOT NULL, speaker TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (folder, speaker)
 );
+CREATE TABLE IF NOT EXISTS row_speaker (   -- "only this row": overrides the voice's name for one row
+  folder TEXT NOT NULL, seg INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY (folder, seg)
+);
+CREATE TABLE IF NOT EXISTS moment (        -- saved A-B ranges
+  id INTEGER PRIMARY KEY, folder TEXT NOT NULL, a REAL NOT NULL, b REAL NOT NULL,
+  abs_a TEXT NOT NULL, abs_b TEXT NOT NULL, label TEXT NOT NULL, created TEXT NOT NULL
+);
 """
 
 
@@ -154,3 +161,46 @@ def set_speaker_name(con, folder, speaker, name):
     else:
         con.execute("DELETE FROM speaker_name WHERE folder=? AND speaker=?", (folder, speaker))
     con.commit()
+
+
+def row_speakers(con, folder):
+    return {r[0]: r[1] for r in con.execute("SELECT seg, name FROM row_speaker WHERE folder=?", (folder,))}
+
+
+def set_row_speaker(con, folder, seg, name):
+    if name.strip():
+        con.execute("INSERT OR REPLACE INTO row_speaker VALUES (?,?,?)", (folder, seg, name.strip()))
+    else:
+        con.execute("DELETE FROM row_speaker WHERE folder=? AND seg=?", (folder, seg))
+    con.commit()
+
+
+def people(con):
+    """Every name given to a voice or a row, with where it is used: {name: {folder: n_assignments}}."""
+    out = {}
+    for name, folder in con.execute("SELECT name, folder FROM speaker_name UNION ALL SELECT name, folder FROM row_speaker"):
+        out.setdefault(name, {}).setdefault(folder, 0)
+        out[name][folder] += 1
+    return out
+
+
+# ---- moments (saved A-B ranges)
+def add_moment(con, folder, a, b, abs_a, abs_b, label):
+    cur = con.execute("INSERT INTO moment (folder, a, b, abs_a, abs_b, label, created) VALUES (?,?,?,?,?,?,?)",
+                      (folder, a, b, abs_a, abs_b, label, now()))
+    con.commit()
+    return cur.lastrowid
+
+
+def moments(con, folder=None):
+    q = "SELECT * FROM moment" + (" WHERE folder=?" if folder else "") + " ORDER BY abs_a"
+    return [dict(r) for r in con.execute(q, (folder,) if folder else ())]
+
+
+def delete_moment(con, mid):
+    con.execute("DELETE FROM moment WHERE id=?", (mid,))
+    con.commit()
+
+
+def all_notes(con):
+    return [dict(r) for r in con.execute("SELECT * FROM note ORDER BY abs")]

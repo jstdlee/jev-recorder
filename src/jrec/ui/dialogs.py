@@ -50,74 +50,46 @@ def row_line(label, value):
     th.small(value)
 
 
-# ------------------------------------------------------------- settings
-def settings(app):
-    r = _begin_modal("Settings", app.show_settings, 700 * app.prefs["text_size"])
-    if r is None:
-        app.show_settings = False
-        return
-    if not r:
-        return
-    th.section("Appearance")
-    with th.card("set_look", flags=imgui.ChildFlags_.auto_resize_y):
-        ch, v = setting_row(app, "Theme", "Dark or light; applies at once", "theme", app.prefs["theme"], ["Dark", "Light"])
-        if ch:
-            app.set_pref("theme", v)
-        imgui.separator()
-        ch, v = setting_row(app, "Text size", "Everything in the window; Ctrl+ Ctrl– Ctrl+0 too", "size",
-                            app.prefs["text_size"], [1.0, 1.1, 1.25, 1.5], ["100%", "110%", "125%", "150%"])
-        if ch:
-            app.set_pref("text_size", v)
-        imgui.separator()
-        ch, v = setting_row(app, "Time axis", "Label the timeline with the clock, or time since the clip starts", "axis",
-                            app.prefs["axis"], ["clock", "offset"], ["Clock", "From start"])
-        if ch:
-            app.set_pref("axis", v)
-    th.section("Playback")
-    with th.card("set_play", flags=imgui.ChildFlags_.auto_resize_y):
-        ch, v = setting_row(app, "Speed", "Pitch stays natural at every speed", "dspeed", app.player.speed,
-                            [1.0, 1.25, 1.5, 2.0, 3.0], ["1×", "1.25×", "1.5×", "2×", "3×"])
-        if ch:
-            app.set_speed(v)
-        imgui.separator()
-        ch, v = setting_row(app, "Skip silence", "Jump over quiet gaps longer than 3 s while playing", "dskip",
-                            app.skip_silence, [False, True], ["Off", "On"])
-        if ch:
-            app.skip_silence = v
-            app.set_pref("skip_silence", v)
-    th.section("Summaries and translation")
-    with th.card("set_llm", flags=imgui.ChildFlags_.auto_resize_y):
-        prof = app.cfg.llm_profile()
-        name = app.cfg.llm.get("default")
-        changed = {}
-        for key, label, desc, hint in (("base_url", "Server", "Any OpenAI-compatible endpoint", "http://localhost:8888/v1"),
-                                       ("model", "Model", "Name the server expects", "default"),
-                                       ("api_key_env", "API key variable", "Read the key from this environment variable",
-                                        "OPENAI_API_KEY")):
+# ------------------------------------------------------------- settings (floating, movable, searchable)
+def _settings_rows(app):
+    """[(section, title, description, render)] — render(title, desc) draws one Magpie row."""
+    prof = app.cfg.llm_profile()
+    name = app.cfg.llm.get("default")
+
+    def seg_row(key, options, labels, setter):
+        def render(t, d):
+            ch, v = setting_row(app, t, d, key, getter[key](), options, labels)
+            if ch:
+                setter(v)
+        return render
+
+    getter = {"theme": lambda: app.prefs["theme"], "size": lambda: app.prefs["text_size"],
+              "axis": lambda: app.prefs["axis"], "dspeed": lambda: app.player.speed,
+              "dskip": lambda: app.skip_silence, "dsound": lambda: app.player.sound,
+              "chunk": lambda: int(prof.get("chunk_chars", 256000)), "overlap": lambda: int(prof.get("overlap_chars", 8000)),
+              "tto": lambda: app.prefs["translate_to"]}
+
+    def set_skip(v):
+        app.skip_silence = v
+        app.set_pref("skip_silence", v)
+
+    def set_sound(v):
+        app.player.sound = v
+        app.set_pref("sound", v)
+        app.player.restart()
+
+    def llm_field(key, hint):
+        def render(t, d):
             buf = app.llm_edit.setdefault(key, str(prof.get(key, "") or ""))
-            done, buf = text_row(app, label, desc, f"llm_{key}", buf, hint)
+            done, buf = text_row(app, t, d, f"llm_{key}", buf, hint)
             app.llm_edit[key] = buf
             if done and buf != str(prof.get(key, "") or ""):
-                changed[key] = buf
-            imgui.separator()
-        ch, v = setting_row(app, "Chunk size", "Long transcripts are summarised in parts this long (characters)",
-                            "chunk", int(prof.get("chunk_chars", 256000)), [32000, 64000, 128000, 256000],
-                            ["32k", "64k", "128k", "256k"])
-        if ch:
-            changed["chunk_chars"] = v
-        imgui.separator()
-        ch, v = setting_row(app, "Overlap", "Each part repeats the end of the previous one, for context",
-                            "overlap", int(prof.get("overlap_chars", 8000)), [2000, 8000, 16000], ["2k", "8k", "16k"])
-        if ch:
-            changed["overlap_chars"] = v
-        imgui.separator()
-        ch, v = setting_row(app, "Translate into", "Target language for the translate buttons", "tto",
-                            app.prefs["translate_to"], TRANSLATE_TARGETS)
-        if ch:
-            app.set_pref("translate_to", v)
-        if changed:
-            app.cfg.save_llm(name, changed)
-        imgui.separator()
+                app.cfg.save_llm(name, {key: buf})
+        return render
+
+    def test_row(t, d):
+        imgui.text(t)
+        th.small(d)
         if th.button("Test connection"):
             app.llm_test = "Checking…"
             threading.Thread(target=_test_llm, args=(app, dict(prof)), daemon=True).start()
@@ -126,19 +98,104 @@ def settings(app):
             imgui.align_text_to_frame_padding()
             th.small(app.llm_test, "ok" if app.llm_test.startswith("Connected") else
                      "text_dim" if app.llm_test == "Checking…" else "danger")
-    th.section("Library")
-    with th.card("set_lib", flags=imgui.ChildFlags_.auto_resize_y):
-        imgui.text("Folder")
-        th.small(str(app.cfg.library))
-        imgui.separator()
-        imgui.text("Evidence")
-        th.small("Original recordings and clips are never changed. Notes, translations, names and summaries are "
-                 "kept separately in the library database.")
-    th.small("Changes are saved as you make them.")
-    if th.button("Done"):
-        imgui.close_current_popup()
+
+    def info_row(text):
+        def render(t, d):
+            imgui.text(t)
+            imgui.push_text_wrap_pos(0)
+            th.small(text)
+            imgui.pop_text_wrap_pos()
+        return render
+
+    return [
+        ("Appearance", "Theme", "Dark or light; applies at once",
+         seg_row("theme", ["Dark", "Light"], None, lambda v: app.set_pref("theme", v))),
+        ("Appearance", "Text size", "Everything in the window; Ctrl+ Ctrl– Ctrl+0 too",
+         seg_row("size", [1.0, 1.1, 1.25, 1.5], ["100%", "110%", "125%", "150%"], lambda v: app.set_pref("text_size", v))),
+        ("Appearance", "Time axis", "Label the timeline with the clock, or time since the clip starts",
+         seg_row("axis", ["clock", "offset"], ["Clock", "From start"], lambda v: app.set_pref("axis", v))),
+        ("Playback", "Speed", "Pitch stays natural at every speed",
+         seg_row("dspeed", [1.0, 1.25, 1.5, 2.0, 3.0], ["1×", "1.25×", "1.5×", "2×", "3×"], app.set_speed)),
+        ("Playback", "Sound", "Clearer is a live noise filter; Cleaned plays the DeepFilterNet copy",
+         seg_row("dsound", ["original", "clearer", "cleaned"], ["Original", "Clearer", "Cleaned"], set_sound)),
+        ("Playback", "Skip silence", "Jump over quiet gaps longer than 3 s while playing",
+         seg_row("dskip", [False, True], ["Off", "On"], set_skip)),
+        ("Summaries and translation", "Server", "Any OpenAI-compatible endpoint", llm_field("base_url", "http://localhost:8888/v1")),
+        ("Summaries and translation", "Model", "Name the server expects", llm_field("model", "default")),
+        ("Summaries and translation", "API key variable", "Read the key from this environment variable",
+         llm_field("api_key_env", "OPENAI_API_KEY")),
+        ("Summaries and translation", "Chunk size", "Long transcripts are summarised in parts this long (characters)",
+         seg_row("chunk", [32000, 64000, 128000, 256000], ["32k", "64k", "128k", "256k"],
+                 lambda v: app.cfg.save_llm(name, {"chunk_chars": v}))),
+        ("Summaries and translation", "Overlap", "Each part repeats the end of the previous one, for context",
+         seg_row("overlap", [2000, 8000, 16000], ["2k", "8k", "16k"], lambda v: app.cfg.save_llm(name, {"overlap_chars": v}))),
+        ("Summaries and translation", "Translate into", "Target language for the translate buttons",
+         seg_row("tto", TRANSLATE_TARGETS, None, lambda v: app.set_pref("translate_to", v))),
+        ("Summaries and translation", "Connection", "Check that the server answers", test_row),
+        ("Library", "Folder", "Where recordings, clips and the database live", info_row(str(app.cfg.library))),
+        ("Library", "Evidence", "What is never changed",
+         info_row("Original recordings and clips are never changed. Notes, translations, names, moments and summaries "
+                  "are kept separately in the library database.")),
+    ]
+
+
+def settings(app):
+    """A normal floating window: movable, closable, stays above the main window, with a sticky search."""
+    if not app.show_settings:
+        return
+    vp = imgui.get_main_viewport()
+    w = min(720 * app.prefs["text_size"], vp.work_size.x - 60)
+    imgui.set_next_window_size(imgui.ImVec2(w, vp.work_size.y * 0.8), imgui.Cond_.appearing)
+    imgui.set_next_window_pos(imgui.ImVec2(vp.work_pos.x + vp.work_size.x - w / 2 - 30, vp.work_pos.y + vp.work_size.y / 2),
+                              imgui.Cond_.appearing, imgui.ImVec2(0.5, 0.5))
+    imgui.push_style_color(imgui.Col_.window_bg, C("bg"))
+    imgui.push_style_color(imgui.Col_.title_bg, C("track"))
+    imgui.push_style_color(imgui.Col_.title_bg_active, C("pill"))
+    imgui.push_style_var(imgui.StyleVar_.window_border_size, 1.0)
+    imgui.push_style_var(imgui.StyleVar_.window_rounding, 10.0)
+    visible, app.show_settings = imgui.begin("Settings", True, imgui.WindowFlags_.no_collapse
+                                             | imgui.WindowFlags_.no_saved_settings)
+    imgui.pop_style_var(2)
+    imgui.pop_style_color(3)
+    if not visible:
+        imgui.end()
+        return
+    if imgui.is_window_focused(imgui.FocusedFlags_.root_and_child_windows) and \
+            imgui.is_key_pressed(imgui.Key.escape, False) and not imgui.get_io().want_text_input:
         app.show_settings = False
-    imgui.end_popup()
+    # sticky search: stays put while the settings below scroll
+    if app.settings_focus:
+        imgui.set_keyboard_focus_here()
+        app.settings_focus = False
+    imgui.set_next_item_width(-1)
+    _, app.settings_query = imgui.input_text_with_hint("##sq", "Search settings", app.settings_query)
+    q = app.settings_query.strip().lower()
+    rows = [r for r in _settings_rows(app) if not q or q in (r[0] + " " + r[1] + " " + r[2]).lower()]
+    imgui.push_style_color(imgui.Col_.child_bg, C("bg", 0.0))   # page background; the cards stand out
+    imgui.begin_child("settings_body", imgui.ImVec2(0, 0))
+    imgui.pop_style_color()
+    if not rows:
+        imgui.dummy(imgui.ImVec2(0, 10))
+        imgui.text_colored(C("text_dim"), f"No setting matches “{app.settings_query}”.")
+    sections = []
+    for sec, *_ in rows:
+        if sec not in sections:
+            sections.append(sec)
+    for sec in sections:
+        th.section(sec)
+        with th.card(f"set_{sec}", flags=imgui.ChildFlags_.auto_resize_y):
+            first = True
+            for s_, t, d, render in rows:
+                if s_ != sec:
+                    continue
+                if not first:
+                    imgui.separator()
+                first = False
+                render(t, d)
+    imgui.dummy(imgui.ImVec2(0, 4))
+    th.small("Changes are saved as you make them.")
+    imgui.end_child()
+    imgui.end()
 
 
 def _test_llm(app, prof):
@@ -194,7 +251,7 @@ def row_view(app):
     c, i = rv
     s = c.segments[i]
     t_next = c.segments[i + 1]["_t0"] if i + 1 < len(c.segments) else c.duration
-    title(f"{c.speaker(s) or 'Speaker'}  ·  {s['abs_start'][11:19]}–{s['abs_end'][11:19]}")
+    title(f"{c.speaker(s, i) or 'Speaker'}  ·  {s['abs_start'][11:19]}–{s['abs_end'][11:19]}")
     th.small(f"{fmt_offset(s['_t0'])} into the clip  ·  {s['_t1'] - s['_t0']:.1f} s  ·  row {i + 1} of {len(c.segments)}")
     imgui.dummy(imgui.ImVec2(0, 4))
     with th.card("rv_orig", flags=imgui.ChildFlags_.auto_resize_y):
@@ -291,28 +348,85 @@ def note_editor(app):
 # ------------------------------------------------------------- speaker name
 def speaker_editor(app):
     se = app.speaker_edit
-    r = _begin_modal("Speaker", se is not None, 460 * app.prefs["text_size"])
+    r = _begin_modal("Speaker", se is not None, 560 * app.prefs["text_size"])
     if r is None:
         app.speaker_edit = None
         return
     if not r:
         return
-    c = se["conv"]
-    title(f"Name for {se['speaker']}")
-    th.small("Used everywhere in this conversation. Leave empty to go back to the label.")
+    c, k, row = se["conv"], se["speaker"], se.get("row")
+    n_rows = len(c.voice_rows(k))
+    title(f"Who is {c.default_name(k)}?")
+    th.small("Names are kept in the library database; the recording is not changed.")
     if se.pop("focus", False):
         imgui.set_keyboard_focus_here()
     imgui.set_next_item_width(-1)
-    enter, se["name"] = imgui.input_text_with_hint("##spk", "e.g. Mum", se["name"], imgui.InputTextFlags_.enter_returns_true)
+    enter, se["name"] = imgui.input_text_with_hint("##spk", f"e.g. Mum  (empty = back to {c.default_name(k)})",
+                                                   se["name"], imgui.InputTextFlags_.enter_returns_true)
+    known = sorted(db.people(app.con))
+    if known:
+        th.small("People you have named before")
+        for j, name in enumerate(known[:24]):
+            if j:
+                imgui.same_line(0, 4)
+                if imgui.get_content_region_avail().x < imgui.calc_text_size(name).x + 24:
+                    imgui.new_line()
+            if imgui.small_button(f"{name}##p{j}"):
+                se["name"] = name
+    imgui.dummy(imgui.ImVec2(0, 4))
+    if row is not None:
+        _, se["scope"] = th.labeled_seg("Change", "scope", se["scope"], ["row", "voice"],
+                                        ["Only this row", f"All {n_rows} rows of this voice"],
+                                        [f"Just row {row + 1} (e.g. the voice was mixed up here)",
+                                         f"Every row labelled {c.default_name(k)} in this conversation"])
+    imgui.dummy(imgui.ImVec2(0, 4))
     if th.primary_button("Save") or enter:
-        db.set_speaker_name(app.con, c.name, se["speaker"], se["name"])
+        if row is not None and se["scope"] == "row":
+            db.set_row_speaker(app.con, c.name, row, se["name"])
+        else:
+            db.set_speaker_name(app.con, c.name, k, se["name"])
+            if row is not None and row in c.row_names and not se["name"].strip():
+                db.set_row_speaker(app.con, c.name, row, "")
         c.names = db.speaker_names(app.con, c.name)
+        c.row_names = db.row_speakers(app.con, c.name)
         imgui.close_current_popup()
         app.speaker_edit = None
     imgui.same_line()
     if th.button("Cancel"):
         imgui.close_current_popup()
         app.speaker_edit = None
+    imgui.end_popup()
+
+
+# ------------------------------------------------------------- moments
+def moment_editor(app):
+    me = app.moment_edit
+    r = _begin_modal("Moment", me is not None, 520 * app.prefs["text_size"])
+    if r is None:
+        app.moment_edit = None
+        return
+    if not r:
+        return
+    c = me["conv"]
+    title("Save this stretch as a moment")
+    th.small(f"{c.abs_at(me['a']):%Y-%m-%d %H:%M:%S} – {c.abs_at(me['b']):%H:%M:%S}  ({me['b'] - me['a']:.1f} s). "
+             "Listed under Moments on the left.")
+    if me.pop("focus", False):
+        imgui.set_keyboard_focus_here()
+    imgui.set_next_item_width(-1)
+    enter, me["label"] = imgui.input_text_with_hint("##ml", "What happens here, e.g. 'promise about the roof'",
+                                                    me["label"], imgui.InputTextFlags_.enter_returns_true)
+    if th.primary_button("Save", disabled=not me["label"].strip(), why="Give it a short label") or \
+            (enter and me["label"].strip()):
+        db.add_moment(app.con, c.name, me["a"], me["b"], c.abs_at(me["a"]).isoformat(), c.abs_at(me["b"]).isoformat(),
+                      me["label"].strip())
+        c.moments = db.moments(app.con, c.name)
+        imgui.close_current_popup()
+        app.moment_edit = None
+    imgui.same_line()
+    if th.button("Cancel"):
+        imgui.close_current_popup()
+        app.moment_edit = None
     imgui.end_popup()
 
 

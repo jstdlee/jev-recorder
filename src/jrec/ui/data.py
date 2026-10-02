@@ -27,6 +27,7 @@ class Conversation:
         self.sp1 = (datetime.fromisoformat(w["speech_end"]) - self.start).total_seconds()
         self.segments, self.summary, self.title = [], None, None
         self.notes, self.names, self.translations = [], {}, {}   # translations: {lang: {seg: text}}
+        self.row_names, self.moments = {}, []
         self.peaks, self.gain, self.verified = None, 1.0, None
 
     def reload(self, con):
@@ -42,12 +43,27 @@ class Conversation:
         self.title = (self.summary or {}).get("title") or (self.segments[0]["text"][:60] if self.segments else None)
         self.notes = db.notes(con, self.name)
         self.names = db.speaker_names(con, self.name)
+        self.row_names = db.row_speakers(con, self.name)
+        self.moments = db.moments(con, self.name)
         self.translations = {lang: db.translations(con, self.name, lang, self.segments)
                              for lang in db.translated_langs(con, self.name)}
 
-    def speaker(self, s):
+    @staticmethod
+    def default_name(k):
+        """S1 -> 'Char 1' until the user names the voice."""
+        return f"Char {k[1:]}" if k and k[0] == "S" and k[1:].isdigit() else (k or "")
+
+    def speaker(self, s, i=None):
+        """Name shown for row i: the row's own name, else the voice's name, else Char N."""
+        if i is None:
+            i = next((j for j, x in enumerate(self.segments) if x is s), None)
+        if i is not None and i in self.row_names:
+            return self.row_names[i]
         k = s.get("speaker")
-        return self.names.get(k, k) if k else ""
+        return self.names.get(k) or self.default_name(k)
+
+    def voice_rows(self, k):
+        return [i for i, s in enumerate(self.segments) if s.get("speaker") == k]
 
     def load_peaks(self):
         cache = self.folder / "peaks.npy"
@@ -103,4 +119,4 @@ class Conversation:
             return []
         tr = self.translations.get(lang, {}) if lang else {}
         return [i for i, s in enumerate(self.segments)
-                if q in s["text"].lower() or q in tr.get(i, "").lower() or q in self.speaker(s).lower()]
+                if q in s["text"].lower() or q in tr.get(i, "").lower() or q in self.speaker(s, i).lower()]

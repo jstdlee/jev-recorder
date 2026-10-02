@@ -35,7 +35,7 @@ def draw(app, c):
     imgui.table_setup_scroll_freeze(0, 1)
     imgui.table_setup_column("Time", imgui.TableColumnFlags_.width_fixed, 64 * ts)
     imgui.table_setup_column("", imgui.TableColumnFlags_.width_fixed, 22 * ts)
-    imgui.table_setup_column("Who", imgui.TableColumnFlags_.width_fixed, 56 * ts)
+    imgui.table_setup_column("By", imgui.TableColumnFlags_.width_fixed, 70 * ts)
     imgui.table_setup_column("Text", imgui.TableColumnFlags_.width_stretch, 3.0)
     imgui.table_setup_column("Notes", imgui.TableColumnFlags_.width_stretch, 1.0)
     imgui.table_setup_column("", imgui.TableColumnFlags_.width_fixed, 44 * ts)
@@ -73,15 +73,17 @@ def draw(app, c):
         th.tip(f"{lang or 'unknown'}" + (" (translation). Click: show the original" if lang != s.get("lang")
                                            else (f". Click: show {app.prefs['translate_to']}" if has_tr
                                                  else f". Click: translate into {app.prefs['translate_to']}")))
-        # speaker (click to rename)
+        # by: who is speaking (click to name them; this row only, or every row of this voice)
         imgui.table_next_column()
         if s.get("speaker"):
             k = spk.index(s["speaker"])
             imgui.push_style_color(imgui.Col_.text, imgui.color_convert_u32_to_float4(speaker_color(k, 1.0)))
-            if imgui.selectable(f"{c.speaker(s)}##spk", False, imgui.SelectableFlags_.allow_overlap)[0]:
-                app.rename_speaker(c, s["speaker"])
+            name = c.speaker(s, i)
+            if imgui.selectable(f"{name}{' •' if i in c.row_names else ''}##spk", False,
+                                imgui.SelectableFlags_.allow_overlap)[0]:
+                app.rename_speaker(c, s["speaker"], i)
             imgui.pop_style_color()
-            th.tip("Rename this speaker")
+            th.tip(f"Name who is speaking ({s['speaker']}). • = named for this row only")
         # text
         imgui.table_next_column()
         if lang != s.get("lang"):
@@ -90,6 +92,12 @@ def draw(app, c):
             imgui.text_wrapped(text)
         # notes that fall inside this row's stretch of time (purple = yours)
         imgui.table_next_column()
+        imgui.push_style_color(imgui.Col_.text, C("note", 0.75))
+        imgui.push_style_color(imgui.Col_.button, C("note", 0.10))
+        if imgui.small_button("＋ Note"):
+            app.new_note(c, s["_t0"])
+        imgui.pop_style_color(2)
+        th.tip("Add a note at the start of this row (or press M at the playhead)")
         for nt in c.notes_in(s["_t0"] if i else 0.0, t_next):
             imgui.push_style_color(imgui.Col_.text, C("note"))
             if imgui.selectable(f"{nt['text']}##n{nt['id']}", False, imgui.SelectableFlags_.allow_overlap)[0]:

@@ -2,7 +2,8 @@
 matches (yellow), an A–B range to repeat, playhead, ticks down to single seconds, and a minimap.
 
   click = seek · double-click = play from there · drag = pan · wheel = zoom at the pointer
-  shift+drag = select a range (A–B) · right-click = add note / set A or B / play from here
+  shift+drag = select a range (A–B) · drag an A/B edge = move it · drag the band's top strip = move
+  the whole range · right-click = add note / set A or B / play from here
 """
 from datetime import timedelta
 
@@ -62,6 +63,8 @@ def draw(app, c):
         a, b = app.range_ab
         dl.add_rect_filled(imgui.ImVec2(clipx(x_of(a)), wave_top), imgui.ImVec2(clipx(x_of(b)), wave_bot + h_lane),
                            U("accent", 0.20))
+        dl.add_rect_filled(imgui.ImVec2(clipx(x_of(a)), wave_top), imgui.ImVec2(clipx(x_of(b)), wave_top + 18 * ts),
+                           U("accent", 0.22))
         for t, lab in ((a, "A"), (b, "B")):
             if v0 <= t <= v1:
                 dl.add_line(imgui.ImVec2(x_of(t), wave_top), imgui.ImVec2(x_of(t), wave_bot + h_lane), U("accent"), 1.5)
@@ -168,11 +171,25 @@ def draw(app, c):
             ns = min(c.duration, max(4.0, span * f))
             a = t_m - (mx - p0.x) / w * ns
             app.view = clamp_view(a, a + ns, c.duration)
-        if imgui.is_mouse_double_clicked(0):
+        grab = None
+        if app.range_ab and not io.key_shift:
+            ra, rb = app.range_ab
+            if abs(mx - x_of(ra)) <= 6:
+                grab = "a"
+            elif abs(mx - x_of(rb)) <= 6:
+                grab = "b"
+            elif x_of(ra) < mx < x_of(rb) and io.mouse_pos.y <= wave_top + 18 * ts:
+                grab = "band"
+        if grab in ("a", "b"):
+            imgui.set_mouse_cursor(imgui.MouseCursor_.resize_ew)
+        elif grab == "band":
+            imgui.set_mouse_cursor(imgui.MouseCursor_.resize_all)
+        if imgui.is_mouse_double_clicked(0) and not grab:
             app.seek(c, t_m, play=True)
             app.drag = None
         elif imgui.is_mouse_clicked(0):
-            app.drag = {"x": mx, "view": app.view, "t": t_m, "select": io.key_shift}
+            app.drag = {"x": mx, "view": app.view, "t": t_m, "select": io.key_shift, "grab": grab,
+                        "range": app.range_ab}
         if imgui.is_mouse_clicked(1):
             app.ctx_t = t_m
             app.ctx_note = note_hover
@@ -180,7 +197,17 @@ def draw(app, c):
     d = app.drag
     if d and imgui.is_mouse_down(0):
         mx = io.mouse_pos.x
-        if d["select"]:
+        t2 = max(0.0, min(c.duration, t_of(mx)))
+        if d.get("grab") in ("a", "b"):
+            ra, rb = d["range"]
+            na, nb = (t2, rb) if d["grab"] == "a" else (ra, t2)
+            app.range_ab = (min(na, nb), max(na, nb))
+        elif d.get("grab") == "band":
+            ra, rb = d["range"]
+            shift = t2 - d["t"]
+            shift = max(-ra, min(c.duration - rb, shift))
+            app.range_ab = (ra + shift, rb + shift)
+        elif d["select"]:
             t2 = max(0.0, min(c.duration, t_of(mx)))
             if abs(mx - d["x"]) > 3:
                 app.range_ab = (min(d["t"], t2), max(d["t"], t2))
@@ -189,7 +216,7 @@ def draw(app, c):
             dt = (mx - d["x"]) / w * (b - a)
             app.view = clamp_view(a - dt, b - dt, c.duration)
     if d and imgui.is_mouse_released(0):
-        if abs(io.mouse_pos.x - d["x"]) <= 3 and hovered:
+        if abs(io.mouse_pos.x - d["x"]) <= 3 and hovered and not d.get("grab"):
             if note_hover:
                 app.edit_note(c, note_hover)
             else:

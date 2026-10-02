@@ -116,3 +116,18 @@ def test_export_excerpt_is_byte_exact_and_library_untouched(tmp_path):
     assert em["kind"] == "excerpt" and em["label"] == "promise"
     after = {p.name: _sha(p) for p in list(arch.iterdir()) + list(folder.iterdir()) if p.is_file()}
     assert before == after
+
+
+def test_speaker_names_row_override_people_and_moments(tmp_path):
+    con = db.connect(tmp_path / "j.sqlite")
+    db.set_speaker_name(con, "f1", "S1", "Mum")
+    db.set_row_speaker(con, "f1", 4, "Dad")          # only row 4
+    db.set_speaker_name(con, "f2", "S2", "Mum")
+    assert db.row_speakers(con, "f1") == {4: "Dad"}
+    assert db.people(con) == {"Mum": {"f1": 1, "f2": 1}, "Dad": {"f1": 1}}
+    db.set_row_speaker(con, "f1", 4, "")             # empty = back to the voice's name
+    assert db.row_speakers(con, "f1") == {}
+    mid = db.add_moment(con, "f1", 10.0, 20.0, "2025-10-01T09:00:10+08:00", "2025-10-01T09:00:20+08:00", "roof")
+    assert [m["label"] for m in db.moments(con)] == ["roof"]
+    db.delete_moment(con, mid)
+    assert db.moments(con, "f1") == []

@@ -64,9 +64,11 @@ class App:
         self.ctx_t, self.ctx_note = 0.0, None
         # dialogs
         self.show_settings = self.show_progress = False
-        self.row_view = self.note_edit = self.speaker_edit = None
+        self.row_view = self.note_edit = self.speaker_edit = self.moment_edit = None
         self.llm_edit, self.llm_test = {}, ""
+        self.settings_query, self.settings_focus = "", False
         self.focus_find = self.focus_goto = False
+        self.side_tab, self.person_open, self.rec_open = "conv", None, None
         # recorder import
         self.recorders_seen, self.pending_import = set(), None
         self.import_msg, self.importing = "", False
@@ -208,8 +210,10 @@ class App:
     def open_row(self, c, i):
         self.row_view = (c, i)
 
-    def rename_speaker(self, c, spk):
-        self.speaker_edit = {"conv": c, "speaker": spk, "name": c.names.get(spk, ""), "focus": True}
+    def rename_speaker(self, c, spk, row=None):
+        current = c.row_names.get(row) if row is not None and row in c.row_names else c.names.get(spk, "")
+        self.speaker_edit = {"conv": c, "speaker": spk, "row": row, "name": current, "focus": True,
+                             "scope": "row" if row is not None and row in c.row_names else "voice"}
 
     def toggle_row_lang(self, c, i):
         key = (c.name, i)
@@ -366,13 +370,14 @@ class App:
             imgui.dummy(imgui.ImVec2(0, 40))
             imgui.text_colored(C("text_dim"), "Pick a conversation on the left, or plug in the recorder.")
         imgui.end_child()
-        dialogs.settings(self)
         dialogs.import_dialog(self)
         dialogs.progress(self)
         dialogs.row_view(self)
         dialogs.note_editor(self)
         dialogs.speaker_editor(self)
+        dialogs.moment_editor(self)
         imgui.end()
+        dialogs.settings(self)   # its own window, drawn last: floats above the main window
         if self.quit:
             hello_imgui.get_runner_params().app_shall_exit = True
 
@@ -381,7 +386,7 @@ class App:
         K = imgui.Key
         ctrl = io.key_ctrl or io.key_super
         if ctrl and imgui.is_key_pressed(K.comma, False):
-            self.show_settings = True
+            self.show_settings = self.settings_focus = True
         sizes = [0.9, 1.0, 1.1, 1.25, 1.5]
         cur = min(range(len(sizes)), key=lambda i: abs(sizes[i] - self.prefs["text_size"]))
         if ctrl and (imgui.is_key_pressed(K.equal, False) or imgui.is_key_pressed(K.keypad_add, False)):
@@ -443,41 +448,154 @@ class App:
         if th.button("Settings", help_="Appearance, playback, summaries and translation (Ctrl+,)"):
             self.show_settings = True
         imgui.dummy(imgui.ImVec2(0, 2))
+        _, self.side_tab = th.seg("sidetab", self.side_tab, ["conv", "people", "rec", "moments"],
+                                  ["Talks", "People", "Recordings", "Moments"],
+                                  ["Conversations, newest first", "Everyone you have named, and where they speak",
+                                   "Original recordings from the recorder (read-only archive)",
+                                   "Your notes and saved A–B stretches"])
+        imgui.dummy(imgui.ImVec2(0, 2))
         imgui.begin_child("list", imgui.ImVec2(0, 0), 0)
         if self.hits is not None:
-            th.section(f"{len(self.hits)} result{'s' if len(self.hits) != 1 else ''}")
-            for i, h in enumerate(self.hits):
-                if self.list_row(f"hit{i}", h["text"], f"{h['abs_start'][:10]}  {h['abs_start'][11:19]}"
-                                 + (f"  ·  {h['speaker']}" if h.get("speaker") else ""), False):
-                    conv = next((c for c in self.convs if c.name == h["folder"]), None)
-                    if conv:
-                        self.find = self.query
-                        self.select(conv, conv.t_of_abs(datetime.fromisoformat(h["abs_start"])))
-                        self.update_matches()
-            if not self.hits:
-                imgui.text_colored(C("text_dim"), "No transcript contains that.")
+            self.side_hits()
+        elif self.side_tab == "people":
+            self.side_people()
+        elif self.side_tab == "rec":
+            self.side_recordings()
+        elif self.side_tab == "moments":
+            self.side_moments()
         else:
-            if not self.convs:
-                th.section("Library is empty")
-                imgui.push_text_wrap_pos(0)
-                imgui.text_colored(C("text_dim"), "Plug in the recorder: the import dialog opens here. "
-                                                  "A copied folder can be imported with  jrec import <folder>.")
-                imgui.pop_text_wrap_pos()
-            day = None
-            for c in self.convs:
-                d = c.speech_start.strftime("%a %-d %b %Y")
-                if d != day:
-                    imgui.dummy(imgui.ImVec2(0, 4 if day else 0))
-                    th.section(d)
-                    day = d
-                status = {"cut": "not transcribed", "transcribed": "transcribed",
-                          "summarized": "summarized"}.get(c.status, c.status)
-                extra = f"  ·  {len(c.notes)} note{'s' if len(c.notes) != 1 else ''}" if c.notes else ""
-                if self.list_row(c.name, c.title or f"Conversation at {c.speech_start:%H:%M}",
-                                 f"{c.speech_start:%H:%M}  ·  {(c.sp1 - c.sp0) / 60:.0f} min  ·  {status}{extra}",
-                                 c is self.sel):
-                    self.select(c)
+            self.side_conversations()
         imgui.end_child()
+
+    def side_hits(self):
+        th.section(f"{len(self.hits)} result{'s' if len(self.hits) != 1 else ''}")
+        for i, h in enumerate(self.hits):
+            if self.list_row(f"hit{i}", h["text"], f"{h['abs_start'][:10]}  {h['abs_start'][11:19]}"
+                             + (f"  ·  {h['speaker']}" if h.get("speaker") else ""), False):
+                conv = next((c for c in self.convs if c.name == h["folder"]), None)
+                if conv:
+                    self.find = self.query
+                    self.select(conv, conv.t_of_abs(datetime.fromisoformat(h["abs_start"])))
+                    self.update_matches()
+        if not self.hits:
+            imgui.text_colored(C("text_dim"), "No transcript contains that.")
+
+    def side_conversations(self):
+        if not self.convs:
+            th.section("Library is empty")
+            imgui.push_text_wrap_pos(0)
+            imgui.text_colored(C("text_dim"), "Plug in the recorder: the import dialog opens here. "
+                                              "A copied folder can be imported with  jrec import <folder>.")
+            imgui.pop_text_wrap_pos()
+        day = None
+        for c in self.convs:
+            d = c.speech_start.strftime("%a %-d %b %Y")
+            if d != day:
+                imgui.dummy(imgui.ImVec2(0, 4 if day else 0))
+                th.section(d)
+                day = d
+            status = {"cut": "not transcribed", "transcribed": "transcribed",
+                      "summarized": "summarized"}.get(c.status, c.status)
+            extra = f"  ·  {len(c.notes)} note{'s' if len(c.notes) != 1 else ''}" if c.notes else ""
+            if self.list_row(c.name, c.title or f"Conversation at {c.speech_start:%H:%M}",
+                             f"{c.speech_start:%H:%M}  ·  {(c.sp1 - c.sp0) / 60:.0f} min  ·  {status}{extra}",
+                             c is self.sel):
+                self.select(c)
+
+    def side_people(self):
+        people = db.people(self.con)
+        if not people:
+            th.section("No names yet")
+            imgui.push_text_wrap_pos(0)
+            imgui.text_colored(C("text_dim"), "Voices show as Char 1, Char 2… Click a name in the By column of a "
+                                              "transcript to say who it is.")
+            imgui.pop_text_wrap_pos()
+            return
+        for name in sorted(people):
+            where = people[name]
+            open_ = self.person_open == name
+            if self.list_row(f"p_{name}", name, f"{len(where)} conversation{'s' if len(where) != 1 else ''}", open_):
+                self.person_open = None if open_ else name
+            if open_:
+                imgui.indent(10)
+                for c in self.convs:
+                    if c.name not in where:
+                        continue
+                    rows = [i for i, s in enumerate(c.segments) if c.speaker(s, i) == name]
+                    th.section(f"{c.speech_start:%a %-d %b  %H:%M}  ·  {len(rows)} rows")
+                    for i in rows[:40]:
+                        s = c.segments[i]
+                        if imgui.selectable(f"{s['abs_start'][11:19]}  {s['text'][:60]}##pr{c.name}{i}", False)[0]:
+                            self.select(c, s["_t0"])
+                            self.sel_row = (c.name, i)
+                imgui.unindent(10)
+
+    def side_recordings(self):
+        rows = self.con.execute("SELECT * FROM source ORDER BY start DESC").fetchall()
+        if not rows:
+            th.section("No recordings imported")
+            return
+        th.section(f"{len(rows)} original recording{'s' if len(rows) != 1 else ''}  ·  read-only")
+        from ..cli import _fmt_dur, _fmt_size, human_flag
+        for r in rows:
+            convs = [c for c in self.convs if any(p["source_sha256"] == r["sha256"] for p in c.manifest["parts"])]
+            flags = json.loads(r["flags"])
+            sub = (f"{r['start'][:16].replace('T', ' ')}  ·  {_fmt_dur(r['duration'])}  ·  {_fmt_size(r['size'])}  ·  "
+                   f"{len(convs)} talk{'s' if len(convs) != 1 else ''}" + (f"  ·  {', '.join(human_flag(f) for f in flags)}"
+                                                                          if flags else ""))
+            open_ = self.rec_open == r["sha256"]
+            if self.list_row(f"r_{r['sha256'][:12]}", r["orig_path"].split("/")[-1], sub, open_):
+                self.rec_open = None if open_ else r["sha256"]
+            th.tip(f"{r['device']}:{r['orig_path']}\nsha256 {r['sha256']}\nstart time: {r['start_source']} "
+                   f"({r['start_conf']} confidence)")
+            if open_:
+                imgui.indent(10)
+                for c in convs:
+                    if imgui.selectable(f"{c.speech_start:%H:%M}  {c.title or 'Conversation'}##rc{c.name}",
+                                        c is self.sel)[0]:
+                        self.select(c)
+                if not convs:
+                    th.small("No conversation found in this recording (only silence or noise).")
+                imgui.unindent(10)
+
+    def side_moments(self):
+        items = [("note", n) for n in db.all_notes(self.con)] + [("moment", m) for m in db.moments(self.con)]
+        items.sort(key=lambda x: x[1]["abs"] if x[0] == "note" else x[1]["abs_a"], reverse=True)
+        if not items:
+            th.section("Nothing saved yet")
+            imgui.push_text_wrap_pos(0)
+            imgui.text_colored(C("text_dim"), "Add a note (M or ＋ Note) or mark A–B and press Save as moment.")
+            imgui.pop_text_wrap_pos()
+            return
+        by_name = {c.name: c for c in self.convs}
+        day = None
+        for kind, it in items:
+            when = it["abs"] if kind == "note" else it["abs_a"]
+            d = when[:10]
+            if d != day:
+                th.section(datetime.fromisoformat(when).strftime("%a %-d %b %Y"))
+                day = d
+            c = by_name.get(it["folder"])
+            if kind == "note":
+                imgui.push_style_color(imgui.Col_.text, C("note"))
+                clicked = imgui.selectable(f"◆ {when[11:19]}  {it['text']}##mn{it['id']}", False)[0]
+                imgui.pop_style_color()
+                th.tip("Your note")
+                if clicked and c:
+                    self.select(c, it["t"])
+            else:
+                clicked = imgui.selectable(f"▭ {when[11:19]}–{it['abs_b'][11:19]}  {it['label']}##mm{it['id']}",
+                                           False)[0]
+                th.tip("Saved stretch: opens with A–B set to repeat")
+                if clicked and c:
+                    self.select(c, it["a"])
+                    self.range_ab, self.loop = (it["a"], it["b"]), True
+                if imgui.begin_popup_context_item(f"mctx{it['id']}"):
+                    if imgui.menu_item("Delete this moment", "", False)[0]:
+                        db.delete_moment(self.con, it["id"])
+                        if c:
+                            c.moments = db.moments(self.con, c.name)
+                    imgui.end_popup()
 
     def job_indicator(self):
         busy = self.job_busy
@@ -608,6 +726,13 @@ class App:
         if self.flash:
             th.small(self.flash, "ok")
 
+    @staticmethod
+    def _fit(width, gap=14):
+        """Continue on this line if `width` more pixels fit, else start a new line."""
+        imgui.same_line(0, gap)
+        if imgui.get_content_region_avail().x < width:
+            imgui.new_line()
+
     def transport(self, c):
         playing = self.player.playing and self.player.conv is c
         ts = self.prefs["text_size"]
@@ -648,20 +773,46 @@ class App:
             if t is not None:
                 self.seek(c, t)
                 self.zoom(c, 1.0, t)
-        # A–B
-        imgui.same_line(0, 14)
+        # notes and A–B (wrapping onto a new line when the window is narrow)
+        self._fit(imgui.calc_text_size("＋ Note").x + 24)
+        imgui.push_style_color(imgui.Col_.button, C("note", 0.22))
+        imgui.push_style_color(imgui.Col_.button_hovered, C("note", 0.35))
+        if imgui.button("＋ Note"):
+            self.new_note(c, here)
+        imgui.pop_style_color(2)
+        th.tip("Add a note at the playhead (M)")
+        self._fit(imgui.calc_text_size("Set ASet B").x + 50)
+        if imgui.button("Set A"):
+            self.set_a(here)
+        th.tip("Start of the stretch to repeat, at the playhead ([)")
+        imgui.same_line(0, 4)
+        if imgui.button("Set B"):
+            self.set_b(here)
+        th.tip("End of the stretch, at the playhead (])")
         if self.range_ab:
             a, b = self.range_ab
-            ch, v = th.labeled_seg(f"A–B {fmt_clock(c.abs_at(a))}–{fmt_clock(c.abs_at(b))}", "loop", self.loop,
-                                   [False, True], ["Once", "Repeat"],
-                                   ["Play through", "Repeat A–B until stopped (L); Esc clears"])
+            label = f"{fmt_clock(c.abs_at(a))}–{fmt_clock(c.abs_at(b))} ({b - a:.1f} s)"
+            self._fit(imgui.calc_text_size(label + "ClearSave as moment").x + th.seg_width(["Once", "Repeat"]) + 60, 10)
+            ch, v = th.labeled_seg(label, "loop",
+                                   self.loop, [False, True], ["Once", "Repeat"],
+                                   ["Play through", "Repeat A–B until stopped (L)"])
             if ch:
                 self.loop = v
                 if v and playing:
                     self.player.play(c, a)
+            imgui.same_line(0, 4)
+            if imgui.button("Clear"):
+                self.range_ab, self.loop = None, False
+            th.tip("Remove the A–B range (Esc)")
+            if self.range_ab:
+                imgui.same_line(0, 4)
+                if imgui.button("Save as moment"):
+                    self.moment_edit = {"conv": c, "a": a, "b": b, "label": "", "focus": True}
+                th.tip("Keep this stretch in Moments (left), with a label")
         else:
+            self._fit(imgui.calc_text_size("or Shift+drag on the timeline").x, 8)
             imgui.align_text_to_frame_padding()
-            th.small("Shift+drag or [ ] to mark a stretch to repeat")
+            th.small("or Shift+drag on the timeline")
 
     def options(self, c):
         labels = ["1×", "1.25×", "1.5×", "2×", "3×"]
@@ -829,6 +980,10 @@ class App:
             t, _, text = arg.partition("/")
             db.add_note(self.con, c.name, float(t), c.abs_at(float(t)).isoformat(), text)
             c.notes = db.notes(self.con, c.name)
+        elif cmd == "newnote" and c:          # same path as the M key / right-click menu
+            self.new_note(c, float(arg))
+        elif cmd == "notetext" and self.note_edit:
+            self.note_edit["text"] = arg
         elif cmd == "row" and c:
             self.open_row(c, int(arg))
         elif cmd == "rowsel" and c:
@@ -855,8 +1010,17 @@ class App:
         elif cmd == "size":
             self.prefs["text_size"] = float(arg)
             th.apply(self.prefs["theme"], float(arg))
+        elif cmd == "tab":
+            self.side_tab = arg
+        elif cmd == "person":
+            self.person_open = arg
+        elif cmd == "speaker" and c:
+            i = int(arg)
+            self.rename_speaker(c, c.segments[i]["speaker"], i)
         elif cmd == "settings":
             self.show_settings = True
+        elif cmd == "settingsq":
+            self.settings_query = arg
         elif cmd == "shot":
             self.shot_path, self.quit = arg, True
         elif cmd == "quit":

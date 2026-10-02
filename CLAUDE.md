@@ -30,7 +30,8 @@ with ±10 min raw padding (byte-exact clips + manifest) → Qwen3-ASR-1.7B trans
 app.py (layout, jobs, keys, --ui-script steps), timeline.py, transcript.py, dialogs.py, player.py (ffplay child:
 speed/sound/channel), flags.py (drawn flags), data.py. Styling: polish-ui skill via theme.py tokens.
 Script steps for screenshots: open:N wait:S seek:T find:Q ab:A-B note:T/text row:N rowsel:N viewlang:L
-importdlg:PATH fakejob:i/n/stage/d/t progress settings theme:Dark|Light size:1.5 shot:PATH.
+importdlg:PATH fakejob:i/n/stage/d/t progress settings settingsq:Q tab:conv|people|rec|moments
+person:NAME speaker:ROW newnote:T notetext:X theme:Dark|Light size:1.5 shot:PATH.
 Use a hard-linked copy of ~/jrec-demo/lib for screenshots that write notes/translations.
 
 ## Open items (2026-10-02)
