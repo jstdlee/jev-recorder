@@ -340,7 +340,8 @@ def cmd_ui(cfg, a):
     if a.config:  # child jobs started from the UI use the same config
         os.environ["JREC_CONFIG_PATH"] = str(Path(a.config).expanduser().resolve())
     try:
-        ui.run(cfg, a.ui_script)
+        reason = ui.run(cfg, a.ui_script)
+        log.write(f"{_t.strftime('%F %T')} closed: {reason}\n")
     except BaseException:
         log.write(traceback.format_exc())
         raise

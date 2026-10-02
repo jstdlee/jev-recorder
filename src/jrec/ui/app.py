@@ -108,6 +108,7 @@ class App:
         self.tasks = TaskQueue(cfg, self.cfg_path, on_finish=lambda t: setattr(self, "need_reload", True),
                                on_log=self.log)
         self.need_reload, self.flash = False, ""
+        self.exit_reason = "the desktop closed the window (window manager, Alt+F4 or logout)"
         self.script = [s.strip() for s in script.split(",")] if script else []
         self.script_wait, self.quit, self.shot_path = 0.0, False, None
         self.reload()
@@ -469,6 +470,8 @@ class App:
         dialogs.settings(self)   # its own windows, drawn last: float above the main window
         shell.palette(self)
         if self.quit:
+            if self.exit_reason.startswith("the desktop"):
+                self.exit_reason = "quit requested (Ctrl+Q, palette or --ui-script)"
             hello_imgui.get_runner_params().app_shall_exit = True
 
     def vsplit(self, id_, height=0.0):
@@ -519,9 +522,12 @@ class App:
         bw = h - 8
         wins = []
         if window.available():
+            def close():
+                self.exit_reason = "close button in the title bar"
+                window.close()
             wins = [(th.ICON_MIN, "Minimize", window.minimize, None),
                     (th.ICON_RESTORE if window.maximized() else th.ICON_MAX, "Maximize / restore", window.toggle_maximize, None),
-                    (th.ICON_X, "Close", window.close, "danger")]
+                    (th.ICON_X, "Close", close, "danger")]
         x_win = p.x + w - len(wins) * (bw + 4)
         cluster_w = 4 * bw + 12
         x_util = x_win - (14 if wins else 0) - cluster_w
@@ -1589,3 +1595,4 @@ def run(cfg, script=None):
     if app.shot_path:
         from PIL import Image
         Image.fromarray(hello_imgui.final_app_window_screenshot()).save(app.shot_path)
+    return app.exit_reason

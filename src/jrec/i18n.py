@@ -255,6 +255,7 @@ _ROWS = {
     "Nothing to show.": ("没有内容。", "表示するものはありません。", "표시할 것 없음."),
     "Transcribing new conversations": ("转写新对话", "新しい会話を文字起こし", "새 대화 전사"),
     "System follows your desktop; applies at once (Ctrl+Shift+T)": ("“跟随系统”随桌面设置；立即生效（Ctrl+Shift+T）", "「システム」はデスクトップに合わせます。すぐに反映（Ctrl+Shift+T）", "‘시스템’은 데스크톱을 따름, 즉시 적용 (Ctrl+Shift+T)"),
+    "Show subtitles": ("显示字幕", "字幕を表示", "자막 표시"),
     "Pick a conversation": ("选择对话", "会話を選ぶ", "대화 선택"),
 }
 TABLE = {code: {en: row[k] for en, row in _ROWS.items()} for k, code in enumerate(["zh-CN", "ja", "ko"])}

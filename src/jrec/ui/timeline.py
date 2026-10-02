@@ -12,6 +12,7 @@ from imgui_bundle import imgui
 import numpy as np
 
 from .. import theme as th
+from ..i18n import T
 from ..theme import C, U
 from .data import PEAK_HZ
 
@@ -88,18 +89,19 @@ def draw(app, c):
                                U("pad_shade", 0.85))
     if app.range_ab:
         a, b = app.range_ab
+        # orange, see-through: the waveform stays readable under it
         dl.add_rect_filled(imgui.ImVec2(clipx(x_of(a)), wave_top), imgui.ImVec2(clipx(x_of(b)), wave_bot + h_lane),
-                           U("accent", 0.20))
+                           U("ab", 0.18))
         dl.add_rect_filled(imgui.ImVec2(clipx(x_of(a)), wave_top), imgui.ImVec2(clipx(x_of(b)), wave_top + 26 * ts),
-                           U("accent", 0.22))
-        for t in (a, b):   # edge handles: wide enough to grab
+                           U("ab", 0.30))
+        for t in (a, b):   # edge lines and handles: wide enough to grab
             if v0 <= t <= v1:
                 dl.add_rect_filled(imgui.ImVec2(x_of(t) - 3, wave_top + 8 * ts), imgui.ImVec2(x_of(t) + 3, wave_top + 22 * ts),
-                                   U("accent"), 2.0)
+                                   U("ab"), 2.0)
         for t, lab in ((a, "A"), (b, "B")):
             if v0 <= t <= v1:
-                dl.add_line(imgui.ImVec2(x_of(t), wave_top), imgui.ImVec2(x_of(t), wave_bot + h_lane), U("accent"), 1.5)
-                dl.add_text(imgui.ImVec2(x_of(t) + 3, wave_top + 2), U("accent"), lab)
+                dl.add_line(imgui.ImVec2(x_of(t), wave_top), imgui.ImVec2(x_of(t), wave_bot + h_lane), U("ab"), 1.5)
+                dl.add_text(imgui.ImVec2(x_of(t) + 3, wave_top + 2), U("ab"), lab)
 
     # waveform: per-pixel min/max computed with numpy once per view, then cached
     if c.peaks is not None:
@@ -181,6 +183,8 @@ def draw(app, c):
         dl.add_line(imgui.ImVec2(cx, wave_top), imgui.ImVec2(cx, ay), U("playhead"), 2)
         dl.add_triangle_filled(imgui.ImVec2(cx - 5, wave_top), imgui.ImVec2(cx + 5, wave_top), imgui.ImVec2(cx, wave_top + 6),
                                U("playhead"))
+    if app.prefs.get("subtitles", True):
+        subtitle(app, c, dl, p0, w, wave_bot, x_of(app.cursor))
 
     # interaction
     io = imgui.get_io()
@@ -285,6 +289,9 @@ def draw(app, c):
         x = mx_of(c.segments[i]["_t0"])
         dl.add_line(imgui.ImVec2(x, m0.y), imgui.ImVec2(x, m0.y + 4), U("match"), 2.0)
     dl.add_rect(imgui.ImVec2(mx_of(v0), m0.y), imgui.ImVec2(max(mx_of(v1), mx_of(v0) + 3), m0.y + mh), U("text"), 4.0, 1.5)
+    if app.range_ab:
+        dl.add_rect_filled(imgui.ImVec2(mx_of(app.range_ab[0]), m0.y), imgui.ImVec2(max(mx_of(app.range_ab[1]),
+                           mx_of(app.range_ab[0]) + 2), m0.y + mh), U("ab", 0.45), 2.0)
     dl.add_line(imgui.ImVec2(mx_of(app.cursor), m0.y), imgui.ImVec2(mx_of(app.cursor), m0.y + mh), U("playhead"), 1.5)
     if imgui.is_item_activated():                      # click: glide there
         t = (io.mouse_pos.x - m0.x) / w * c.duration
@@ -294,6 +301,49 @@ def draw(app, c):
         app.view_tw = None
         app.view = clamp_view(t - span / 2, t + span / 2, c.duration)
     th.tip("Whole clip: drag to move the view")
+
+
+def row_at(c, t):
+    """Index of the transcript row being spoken at t (the last one started, if still within 1.5 s of its end)."""
+    best = None
+    for i, s in enumerate(c.segments):
+        if s["_t0"] > t:
+            break
+        if s["text"].strip() and t <= s["_t1"] + 1.5:
+            best = i
+    return best
+
+
+def subtitle(app, c, dl, p0, w, wave_bot, cx):
+    """The row being spoken, as a caption under the playhead (the translation when the view shows one)."""
+    i = row_at(c, app.cursor)
+    if i is None:
+        return
+    from .transcript import shown
+    text, _ = shown(app, c, i)
+    text = " ".join(text.split())
+    seg = c.segments[i]
+    who = c.speaker(seg, i)
+    spk = sorted({s.get("speaker") for s in c.segments if s.get("speaker")})
+    col = speaker_color(spk.index(seg["speaker"]) if seg.get("speaker") in spk else 0, 1.0)
+    fs = imgui.get_font_size()
+    pad = 8.0
+    max_w = min(w - 16, max(260.0, w * 0.6))
+    wrap = imgui.calc_text_size(text, wrap_width=max_w - 2 * pad)
+    if wrap.y > fs * 2.6:                                   # at most two lines: keep the end, it is what is heard
+        while len(text) > 8 and imgui.calc_text_size("…" + text, wrap_width=max_w - 2 * pad).y > fs * 2.6:
+            text = text[max(1, len(text) // 12):]
+        text = "…" + text
+        wrap = imgui.calc_text_size(text, wrap_width=max_w - 2 * pad)
+    name_w = imgui.calc_text_size(who).x * 0.82
+    bw = max(wrap.x, name_w) + 2 * pad
+    bh = wrap.y + fs * 0.9 + pad * 1.5
+    x = max(p0.x + 8, min(p0.x + w - 8 - bw, cx - bw / 2))
+    y = wave_bot - bh - 6
+    dl.add_rect_filled(imgui.ImVec2(x, y), imgui.ImVec2(x + bw, y + bh), imgui.get_color_u32(th.hexc("#000000", 0.62)), 6.0)
+    dl.add_text(imgui.get_font(), fs * 0.82, imgui.ImVec2(x + pad, y + pad * 0.6), imgui.get_color_u32(col), who)
+    dl.add_text(imgui.get_font(), fs, imgui.ImVec2(x + pad, y + pad * 0.6 + fs * 0.9),
+                imgui.get_color_u32(th.hexc("#ffffff")), text, wrap_width=max_w - 2 * pad)
 
 
 def context_menu(app, c):
@@ -314,4 +364,8 @@ def context_menu(app, c):
             app.set_b(t)
         if app.range_ab and imgui.menu_item("Clear A–B", "Esc", False)[0]:
             app.range_ab = None
+        imgui.separator()
+        on = bool(app.prefs.get("subtitles", True))
+        if imgui.menu_item(T("Show subtitles"), "", on)[0]:
+            app.set_pref("subtitles", not on)
         imgui.end_popup()

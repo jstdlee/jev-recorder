@@ -16,7 +16,7 @@ PREFS_PATH = config_dir() / "ui.json"
 TOOLTIP_DELAY = 2.0          # seconds the pointer rests before a tooltip shows (polish-app §5)
 DEFAULT_PREFS = {"theme": "System", "lang": "system", "text_size": 1.0, "speed": 1.0, "skip_silence": True, "follow": True,
                  "translate_to": "English", "axis": "clock", "sound": "original", "channel": "both",
-                 "rows": "line", "preview_split": 0.42, "reduce_motion": False}
+                 "rows": "line", "preview_split": 0.42, "subtitles": True, "reduce_motion": False}
 
 
 def hexc(h, a=1.0):
@@ -28,18 +28,18 @@ TOKENS = {
     "Dark": {"bg": "#1c1c1f", "card": "#252528", "card_border": "#303034", "divider": "#2c2c30", "text": "#e8e8ec",
              "text_dim": "#8e8e96", "track": "#2e2e33", "pill": "#3a3a40", "pill_border": "#45454b",
              "accent": "#0a84ff", "danger": "#ff453a", "warn": "#ff9f0a", "ok": "#30d158",
-             "wave": "#64a8ff", "pad_shade": "#1f1f22", "playhead": "#f5f5f7", "match": "#ffd60a",
+             "wave": "#64a8ff", "pad_shade": "#1f1f22", "playhead": "#f5f5f7", "match": "#ffd60a", "ab": "#ff9f0a",
              "note": "#bf5af2"},
     "Light": {"bg": "#f4f4f6", "card": "#ffffff", "card_border": "#e3e3e8", "divider": "#ececf0", "text": "#212126",
               "text_dim": "#737379", "track": "#f1f1f4", "pill": "#ffffff", "pill_border": "#e3e3e8",
               "accent": "#007aff", "danger": "#ff3b30", "warn": "#c93400", "ok": "#248a3d",
-              "wave": "#2f7de1", "pad_shade": "#ebebef", "playhead": "#1d1d1f", "match": "#e0a800",
+              "wave": "#2f7de1", "pad_shade": "#ebebef", "playhead": "#1d1d1f", "match": "#e0a800", "ab": "#ff8a00",
               "note": "#9a3fc4"},
     "Tokyo Night": {"bg": "#1a1b26", "card": "#1f2335", "card_border": "#292e42", "divider": "#292e42",
                     "text": "#c0caf5", "text_dim": "#8089b3", "track": "#292e42", "pill": "#343a55",
                     "pill_border": "#3b4261", "accent": "#7aa2f7", "danger": "#f7768e", "warn": "#e0af68",
                     "ok": "#9ece6a", "wave": "#7dcfff", "pad_shade": "#16161e", "playhead": "#c0caf5",
-                    "match": "#e0af68", "note": "#bb9af7"},
+                    "match": "#e0af68", "ab": "#ff9e64", "note": "#bb9af7"},
 }
 THEMES = ["System", "Light", "Dark", "Tokyo Night"]
 
