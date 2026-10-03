@@ -42,8 +42,8 @@ Untranslated strings: JREC_I18N_MISSING=/tmp/miss.txt jrec ui --ui-script "lang:
 `jrec ui` is single-window per library (instance.py); --ui-script runs and JREC_MULTI_INSTANCE=1 skip the check.
 
 ## Open items (2026-10-03)
-- Demo 2025-10-04 (ASCEND, real HK Mandarin–English chat) is cut but not transcribed: needs ~6 GiB and memory
-  was at 92 % (TensorFold holds 85 GiB). Run `jrec transcribe` on it when memory allows; compare with ses2.json.
+- Demo 2025-10-04 (ASCEND, real HK Mandarin–English chat) transcribed: 89 rows, 2 speakers, MER 22.9 % vs ses2.json
+  (ses2[60 s:480 s]). Not yet summarized (a summary cold-boots TensorFold, ~88 GiB).
 - Vault: age per-file, password + recovery key, lossless only; **waiting for the user's OK to build**.
 - Segments split mid-sentence at the 25 s limit; merge at sentence boundaries.
 - Tamil LID → Whisper fallback; Sony track-mark timestamps (needs a real TX660 file); vLLM backend.

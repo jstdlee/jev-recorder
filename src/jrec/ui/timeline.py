@@ -325,7 +325,9 @@ def subtitle(app, c, dl, p0, w, wave_bot, cx):
     seg = c.segments[i]
     who = c.speaker(seg, i)
     spk = sorted({s.get("speaker") for s in c.segments if s.get("speaker")})
-    col = speaker_color(spk.index(seg["speaker"]) if seg.get("speaker") in spk else 0, 1.0)
+    col = imgui.color_convert_u32_to_float4(speaker_color(spk.index(seg["speaker"]) if seg.get("speaker") in spk else 0, 1.0))
+    col = imgui.ImVec4(col.x + (1 - col.x) * 0.6, col.y + (1 - col.y) * 0.6, col.z + (1 - col.z) * 0.6, 1.0)
+    col = imgui.get_color_u32(col)            # lifted toward white: readable on the dark caption in every theme
     fs = imgui.get_font_size()
     pad = 8.0
     max_w = min(w - 16, max(260.0, w * 0.6))
@@ -340,8 +342,8 @@ def subtitle(app, c, dl, p0, w, wave_bot, cx):
     bh = wrap.y + fs * 0.9 + pad * 1.5
     x = max(p0.x + 8, min(p0.x + w - 8 - bw, cx - bw / 2))
     y = wave_bot - bh - 6
-    dl.add_rect_filled(imgui.ImVec2(x, y), imgui.ImVec2(x + bw, y + bh), imgui.get_color_u32(th.hexc("#000000", 0.62)), 6.0)
-    dl.add_text(imgui.get_font(), fs * 0.82, imgui.ImVec2(x + pad, y + pad * 0.6), imgui.get_color_u32(col), who)
+    dl.add_rect_filled(imgui.ImVec2(x, y), imgui.ImVec2(x + bw, y + bh), imgui.get_color_u32(th.hexc("#000000", 0.80)), 6.0)
+    dl.add_text(imgui.get_font(), fs * 0.82, imgui.ImVec2(x + pad, y + pad * 0.6), col, who)
     dl.add_text(imgui.get_font(), fs, imgui.ImVec2(x + pad, y + pad * 0.6 + fs * 0.9),
                 imgui.get_color_u32(th.hexc("#ffffff")), text, wrap_width=max_w - 2 * pad)
 

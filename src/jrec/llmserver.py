@@ -20,7 +20,6 @@ import time
 
 from .llm import LLMError, reachable
 
-MAX_USE = 0.80          # never plan a start that pushes unified memory above 80 %
 
 
 def managed(profile):

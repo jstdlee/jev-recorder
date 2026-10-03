@@ -72,8 +72,8 @@ Insights and the English translation come from a local LLM (Qwen3.8 Flash Next o
 | **Tokyo Night.** Ctrl+P: "gift" finds lines of the Mandarin meeting through their English translation. | **Tasks and logs** (Ctrl+J): progress, time left, Pause / Stop / Cancel / Retry. |
 | ![Settings in Japanese](docs/gallery/settings-ja.png) | ![Help, Shortcuts tab, in Korean](docs/gallery/help-ko.png) |
 | **日本語.** Settings: one setting per row, changes save at once. | **한국어.** Help › Shortcuts, generated from the command list. |
-| ![The whole app in Simplified Chinese](docs/gallery/zh-cn.png) | |
-| **简体中文.** Dates, labels and Help follow the interface language; recordings are never changed. | |
+| ![The whole app in Simplified Chinese](docs/gallery/zh-cn.png) | ![A real Hong Kong conversation that switches between Mandarin and English](docs/gallery/code-switching.png) |
+| **简体中文.** Dates, labels and Help follow the interface language; recordings are never changed. | **Code-switching.** A real, unscripted Hong Kong chat (ASCEND): each row gets its own language flag. Qwen3-ASR scored 22.9 % mixed error rate against the ASCEND reference (Chinese characters + English words). |
 
 ### Demo library
 
@@ -84,7 +84,7 @@ Insights and the English translation come from a local LLM (Qwen3.8 Flash Next o
 | 2025-10-01 09:00, 120 min | [AMI](https://groups.inf.ed.ac.uk/ami/corpus/) (CC BY 4.0) + [FLEURS](https://huggingface.co/datasets/google/fleurs) Malay | English meeting, then a quieter Malay talk |
 | 2025-10-02 14:00 | [AliMeeting](https://www.openslr.org/119/) R8003 (CC BY-SA 4.0) | 6 min of a 4-person Mandarin meeting |
 | 2025-10-03 19:30 | [FLEURS](https://huggingface.co/datasets/google/fleurs) Cantonese (CC BY 4.0) | 4 min of read Cantonese |
-| 2025-10-04 10:15 | [ASCEND](https://huggingface.co/datasets/CAiRE/ASCEND) session 2 (CC BY-SA 4.0) | 7 min of a real, unscripted Hong Kong chat that switches between Mandarin and English |
+| 2025-10-04 10:15 | [ASCEND](https://huggingface.co/datasets/CAiRE/ASCEND) session 2 (CC BY-SA 4.0) | 7 min of a real, unscripted Hong Kong chat that switches between Mandarin and English; 2 speakers found, 22.9 % mixed error rate |
 
 Each recording sits between 12 and 22 minutes of room tone, like a real recorder file, so the app has to find the
 conversation and keep 10 minutes of raw audio on each side. ASCEND sessions are rebuilt with their real timing
