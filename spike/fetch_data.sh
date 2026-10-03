@@ -26,3 +26,30 @@ for m in ES2004a IS1009a; do
   [ -f $m.rttm ] || curl -fsSL -o $m.rttm https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/main/only_words/rttms/test/$m.rttm
 done
 ls -la
+# ASCEND (Mandarin-English code-switching conversations, HK; CC BY-SA 4.0): rebuild each test session
+# as one timed mono conversation (filenames hold each utterance's start), plus a reference transcript.
+cd "$(dirname "$0")/data" && mkdir -p ascend && cd ascend
+[ -f ses2.wav ] || uv run --no-project --with pyarrow --with soundfile --with numpy --with huggingface_hub python - <<'P'
+import io, json, re
+import numpy as np, soundfile as sf, pyarrow.parquet as pq
+from huggingface_hub import hf_hub_download
+p = hf_hub_download("CAiRE/ASCEND", "main/test-00000-of-00001.parquet", repo_type="dataset", local_dir=".")
+SR, sess = 16000, {}
+for r in pq.read_table(p).to_pylist():
+    m = re.search(r"ses(\d+)_spk(\d+)_L\d+_([\d.]+)_([\d.]+)\.wav", r["path"])
+    a, sr = sf.read(io.BytesIO(r["audio"]["bytes"]), dtype="float32")
+    sess.setdefault(int(m[1]), []).append((float(m[3]), int(m[2]), a.mean(1) if a.ndim > 1 else a,
+                                           r["transcription"], r["language"], r["topic"]))
+for s, items in sorted(sess.items()):
+    end = max(st + len(a) / SR for st, _, a, *_ in items)
+    mix = np.zeros(int(end * SR) + SR, np.float32)
+    for st, _, a, *_ in items:
+        mix[int(st * SR):int(st * SR) + len(a)] += a
+    sf.write(f"ses{s}.wav", mix / max(1e-6, np.abs(mix).max()) * 0.8, SR)
+    json.dump({"session": s, "topic": items[0][5], "license": "CC BY-SA 4.0, CAiRE/ASCEND (Hugging Face)",
+               "utterances": [{"start": round(st, 3), "end": round(st + len(a) / SR, 3), "speaker": spk, "text": t,
+                               "lang": lg} for st, spk, a, t, lg, _ in sorted(items, key=lambda x: x[0])]},
+              open(f"ses{s}.json", "w"), ensure_ascii=False, indent=1)
+    print("ascend session", s, f"{end / 60:.1f} min")
+P
+

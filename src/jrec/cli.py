@@ -25,6 +25,13 @@
 import argparse
 import json
 import sys
+
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+try:
+    __version__ = _pkg_version("jev-recorder")
+except PackageNotFoundError:
+    __version__ = "dev"
 from pathlib import Path
 
 from . import config, db, ingest
@@ -332,6 +339,8 @@ def cmd_ui(cfg, a):
     from .paths import cache_dir
     log_path = cache_dir() / "ui.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    if log_path.exists() and log_path.stat().st_size > 1_000_000:     # rotate: keep one old log
+        log_path.replace(log_path.with_suffix(".log.1"))
     log = open(log_path, "a", buffering=1, encoding="utf-8")
     faulthandler.enable(log)
     log.write(f"\n{_t.strftime('%F %T')} start pid={os.getpid()} DISPLAY={os.environ.get('DISPLAY')} "
@@ -339,6 +348,14 @@ def cmd_ui(cfg, a):
     atexit.register(lambda: log.write(f"{_t.strftime('%F %T')} exit (normal)\n"))
     if a.config:  # child jobs started from the UI use the same config
         os.environ["JREC_CONFIG_PATH"] = str(Path(a.config).expanduser().resolve())
+    if not a.ui_script and not os.environ.get("JREC_MULTI_INSTANCE"):
+        from .ui import instance
+        focus_wanted = []
+        if not instance.claim(cfg.library, lambda: focus_wanted.append(1)):
+            print("jev-recorder is already open for this library; it was brought to the front.")
+            log.write(f"{_t.strftime('%F %T')} closed: already open for this library (brought to the front)\n")
+            return
+        ui.FOCUS_REQUESTS = focus_wanted
     try:
         reason = ui.run(cfg, a.ui_script)
         log.write(f"{_t.strftime('%F %T')} closed: {reason}\n")
@@ -355,6 +372,7 @@ def main(argv=None):
             pass
     ap = argparse.ArgumentParser(prog="jrec", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config")
+    ap.add_argument("--version", action="version", version=f"jev-recorder {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("devices")
     s = sub.add_parser("scan"); s.add_argument("mount", nargs="?")
@@ -379,10 +397,15 @@ def main(argv=None):
     u = sub.add_parser("ui"); u.add_argument("--ui-script", help="e.g. open:0,wait:2.5,shot:/tmp/a.png (wait in seconds)")
     a = ap.parse_args(argv)
     cfg = config.load(a.config)
-    {"devices": cmd_devices, "scan": cmd_scan, "import": cmd_import, "sources": cmd_sources,
-     "cut": cmd_cut, "verify": cmd_verify, "transcribe": cmd_transcribe,
-     "enhance": cmd_enhance, "summarize": cmd_summarize, "search": cmd_search, "translate": cmd_translate, "resegment": cmd_resegment, "analyze": cmd_analyze,
-     "process": cmd_process, "watch": cmd_watch, "ui": cmd_ui}[a.cmd](cfg, a)
+    from .llm import LLMError
+    try:
+        {"devices": cmd_devices, "scan": cmd_scan, "import": cmd_import, "sources": cmd_sources,
+         "cut": cmd_cut, "verify": cmd_verify, "transcribe": cmd_transcribe,
+         "enhance": cmd_enhance, "summarize": cmd_summarize, "search": cmd_search, "translate": cmd_translate, "resegment": cmd_resegment, "analyze": cmd_analyze,
+         "process": cmd_process, "watch": cmd_watch, "ui": cmd_ui}[a.cmd](cfg, a)
+    except LLMError as e:          # plain words for the task queue, no traceback
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

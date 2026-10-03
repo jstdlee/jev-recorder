@@ -1,6 +1,7 @@
 """App shell (polish-app): command registry and keymap, command palette (Ctrl+P), the utility
 cluster at the top right (search · tasks and logs · help · settings), the Tasks and logs panel
 (Ctrl+J) and Help (F1). Menus, palette, tooltips and Help › Shortcuts all read COMMANDS."""
+import re
 import subprocess
 import sys
 import time
@@ -54,10 +55,12 @@ COMMANDS = [
     Command("shortcuts", "Keyboard shortcuts", "General", lambda a: a.open_help("shortcuts"), "Ctrl+/", th.ICON_KEYBOARD),
     Command("settings", "Settings", "General", lambda a: a.open_settings(), "Ctrl+,", th.ICON_GEAR,
             aliases=["preferences", "options"]),
-    Command("theme", "Switch theme", "View", lambda a: a.cycle_theme(), "Ctrl+Shift+T", th.ICON_THEME,
+    Command("theme", "Switch theme", "View", lambda a: a.cycle_theme(), "", th.ICON_THEME,
             aliases=["dark", "light", "tokyo night"]),
     Command("lang", "Switch language", "View", lambda a: a.cycle_lang(), "", th.ICON_LANG,
             aliases=["english", "中文", "日本語", "한국어"]),
+    Command("about", "About jev-recorder", "General", lambda a: setattr(a, "show_about", True), "", th.ICON_ABOUT,
+            aliases=["version"]),
     Command("sidebar", "Show or hide the sidebar", "View", lambda a: setattr(a, "show_sidebar", not a.show_sidebar),
             "Ctrl+B", th.ICON_TALKS),
     Command("zoomin", "Larger text", "View", lambda a: a.text_step(1), "Ctrl+=", th.ICON_TEXT),
@@ -110,7 +113,21 @@ COMMANDS = [
     Command("verify", "Verify clips", "Conversation", lambda a: a.verify(a.sel), "", th.ICON_CHECK, _has_conv,
             aliases=["evidence", "hash", "sha256"]),
 ]
+for _t in th.THEMES:
+    COMMANDS.append(Command(f"theme_{_t}", f"Theme: {_t}", "View", (lambda a, t=_t: a.set_pref("theme", t)), "",
+                            th.ICON_THEME, (lambda a, t=_t: a.prefs.get("theme") != t), aliases=["theme", _t]))
+for _code, _name in zip(i18n.LANGS, i18n.LANG_NAMES):
+    COMMANDS.append(Command(f"lang_{_code}", f"Language: {_name}", "View", (lambda a, c=_code: a.set_pref("lang", c)), "",
+                            th.ICON_LANG, (lambda a, c=_code: i18n.lang() != c), aliases=["language", _name, _code]))
 CMD = {c.id: c for c in COMMANDS}
+
+
+def cmd_label(c):
+    """Translated label; 'Theme: {name}' style labels keep their value."""
+    head, sep, val = c.label.partition(": ")
+    if sep and c.id.startswith(("theme_", "lang_")):
+        return T(head + ": {name}", name=T(val))
+    return T(c.label)
 
 _KEYS = {",": "comma", "/": "slash", "=": "equal", "-": "minus", "[": "left_bracket", "]": "right_bracket",
          "Space": "space", "Enter": "enter", "Esc": "escape", "Left": "left_arrow", "Right": "right_arrow"}
@@ -143,7 +160,7 @@ def dispatch_keys(app):
                 continue
             if want_ctrl != ctrl or want_shift != io.key_shift or want_alt != io.key_alt:
                 continue
-            if c.ctx == "player" and (typing or popup or app.palette_open):
+            if c.ctx == "player" and (typing or popup or app.palette_open or io.nav_visible):
                 continue
             if c.when and not c.when(app):
                 continue
@@ -177,15 +194,51 @@ def utility_cluster(app, x, y, size):
     imgui.set_cursor_screen_pos(imgui.ImVec2(x, y))
     if icon_button("u_search", th.ICON_SEARCH, "Search", keys_for("palette"), size, app.palette_open):
         app.open_palette()
+    if not app.prefs.get("tip_palette_seen") and not app.script:
+        first_run_tip(app, x + size / 2, y + size + 6)
     imgui.set_cursor_screen_pos(imgui.ImVec2(x + (size + gap), y))
     status_icon(app, size)
     imgui.set_cursor_screen_pos(imgui.ImVec2(x + 2 * (size + gap), y))
     if icon_button("u_help", th.ICON_HELP, "Help", keys_for("help"), size, app.show_help):
-        app.open_help("concepts")
+        imgui.open_popup("help_menu")
+    if imgui.begin_popup("help_menu"):
+        for cid in ("help", "shortcuts", "about"):
+            c = CMD[cid]
+            if imgui.menu_item(f"{c.icon}  {cmd_label(c)}", keys_for(cid), False)[0]:
+                c.run(app)
+        imgui.end_popup()
     imgui.set_cursor_screen_pos(imgui.ImVec2(x + 3 * (size + gap), y))
     if icon_button("u_settings", th.ICON_GEAR, "Settings", keys_for("settings"), size, app.show_settings):
         app.open_settings()
     return 4 * size + 3 * gap
+
+
+def first_run_tip(app, cx, y):
+    """One-time hint under the search icon. Dismiss it, or open the palette once, and it never shows again."""
+    text = T("Press Ctrl+P to find anything")
+    fs = imgui.get_font_size()
+    w = imgui.calc_text_size(text).x + imgui.calc_text_size(T("Got it")).x + 44
+    vp = imgui.get_main_viewport()
+    x = min(cx - 24, vp.work_pos.x + vp.work_size.x - w - 8)
+    imgui.set_next_window_pos(imgui.ImVec2(x, y))
+    imgui.push_style_color(imgui.Col_.window_bg, C("accent"))
+    imgui.push_style_color(imgui.Col_.text, th.hexc("#ffffff"))
+    imgui.push_style_var(imgui.StyleVar_.window_rounding, 8.0)
+    imgui.begin("##tip_palette", None, imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.always_auto_resize
+                | imgui.WindowFlags_.no_saved_settings | imgui.WindowFlags_.no_focus_on_appearing
+                | imgui.WindowFlags_.no_nav)
+    imgui.align_text_to_frame_padding()
+    imgui.text(text)
+    imgui.same_line()
+    imgui.push_style_color(imgui.Col_.button, th.hexc("#ffffff", 0.22))
+    if imgui.small_button(T("Got it")):
+        app.prefs["tip_palette_seen"] = True
+        th.save_prefs(app.prefs)
+    imgui.pop_style_color()
+    imgui.end()
+    imgui.pop_style_var()
+    imgui.pop_style_color(2)
+    _ = fs
 
 
 def status_text(app):
@@ -195,10 +248,27 @@ def status_text(app):
     if t:
         eta = q.eta()
         left = f" · {_dur(eta)} {T('left')}" if eta else ""
-        return T("{done} of {total} · {pct}%", done=done, total=total, pct=int(frac * 100)) + left + f"  ·  {T(t.label)}"
+        state = f"  ·  {T(t.note)}" if t.note else ""
+        return (T("{done} of {total} · {pct}%", done=done, total=total, pct=int(frac * 100)) + left
+                + f"  ·  {task_label(t)}" + state)
     if q.paused_all or any(x.state == "paused" for x in q.tasks):
-        return T("Paused")
-    return T("Ready")
+        return T("Paused by you")
+    llm = getattr(app, "llm_online", None)
+    if llm is None:
+        return T("Ready")
+    return T("Ready") + "  ·  " + (T("LLM server online") if llm else T("LLM server offline"))
+
+
+_LABELS = [(re.compile(r"^(Transcribing|Summarising|Analysing) (\d\d:\d\d)$"), lambda m: T(m[1] + " {t}", t=m[2])),
+           (re.compile(r"^Translating (.+) into (.+)$"), lambda m: T("Translating {what} into {to}", what=T(m[1]), to=T(m[2])))]
+
+
+def task_label(t):
+    for pat, fn in _LABELS:
+        m = pat.match(t.label)
+        if m:
+            return fn(m)
+    return T(t.label)
 
 
 def _dur(s):
@@ -358,6 +428,7 @@ def _task_row(app, t):
         if t.resumable:
             acts.append(("pause", th.ICON_PAUSE, "Pause: ends after a clean point; Resume continues with what is left",
                          lambda: q.pause(t), "text_dim"))
+            acts.append(("cancel", th.ICON_X, "Cancel", lambda: ask_cancel(app, t), "text_dim"))
         acts.append(("stop", th.ICON_STOP, "Stop: finished conversations are kept; the current one stays as it was",
                      lambda: q.stop(t), "danger"))
     if t.state == "queued":
@@ -369,13 +440,15 @@ def _task_row(app, t):
         acts.append(("resume", th.ICON_PLAY, "Resume", lambda: q.resume(t), "accent"))
     if t.state in ("queued", "paused"):
         acts.append(("cancel", th.ICON_X, "Cancel", lambda: q.cancel(t), "text_dim"))
+    if t.state == "running" and not t.resumable:
+        acts.append(("cancel", th.ICON_X, "Cancel", lambda: ask_cancel(app, t), "text_dim"))
     if t.state in ("failed", "canceled", "stopped"):
         acts.append(("retry", th.ICON_RETRY, "Retry", lambda: q.retry(t), "accent"))
     if t.state not in ("running",):
         acts.append(("remove", th.ICON_TRASH, "Remove from the list", lambda: q.remove(t), "text_dim"))
     aw = len(acts) * (imgui.get_frame_height() + 2)
     avail = imgui.get_content_region_avail().x - aw - 8
-    label = T(t.label)
+    label = task_label(t)
     imgui.push_clip_rect(imgui.get_cursor_screen_pos(),
                          imgui.ImVec2(imgui.get_cursor_screen_pos().x + avail, imgui.get_cursor_screen_pos().y + 40), True)
     imgui.text(label)
@@ -399,7 +472,10 @@ def _task_row(app, t):
     if t.state == "running":
         eta = t.eta()
         cur = app.conv_label(t.file[2]) if t.file and t.file[2] != "loading-models" else ""
-        th.small(f"{t.stage_label(T)}" + (f"  ·  {cur}" if cur else "") + (f"  ·  {_dur(eta)} {T('left')}" if eta else ""))
+        th.small((T(t.note) if t.note else t.stage_label(T)) + (f"  ·  {cur}" if cur else "")
+                 + (f"  ·  {_dur(eta)} {T('left')}" if eta else ""), "warn" if t.note else "text_dim")
+    elif t.state == "paused":
+        th.small(T("Paused by you"), "warn")
     elif t.state == "failed" and t.error:
         th.small(t.error[:110], "danger")
         if imgui.is_item_hovered():
@@ -413,6 +489,82 @@ def _task_row(app, t):
     imgui.pop_id()
     if run:
         run()
+
+
+def ask_cancel(app, t):
+    """Cancel at once, unless finished work would be thrown away; then ask once."""
+    done = (t.file[0] - 1) if t.file else 0
+    if done > 0:
+        app.cancel_ask = t
+    else:
+        app.tasks.cancel(t)
+
+
+def _modal_style(push=True):
+    if push:
+        imgui.push_style_color(imgui.Col_.popup_bg, C("card"))
+        imgui.push_style_color(imgui.Col_.title_bg_active, C("track"))
+        imgui.push_style_color(imgui.Col_.border, C("card_border"))
+        imgui.push_style_var(imgui.StyleVar_.window_rounding, 10.0)
+        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(16, 14))
+    else:
+        imgui.pop_style_var(2)
+        imgui.pop_style_color(3)
+
+
+def cancel_dialog(app):
+    t = app.cancel_ask
+    if t is None:
+        return
+    if not imgui.is_popup_open("###cancel_task"):
+        imgui.open_popup("###cancel_task")
+    vp = imgui.get_main_viewport()
+    imgui.set_next_window_pos(imgui.ImVec2(vp.work_pos.x + vp.work_size.x / 2, vp.work_pos.y + vp.work_size.y / 2),
+                              imgui.Cond_.appearing, imgui.ImVec2(0.5, 0.5))
+    _modal_style()
+    opened = imgui.begin_popup_modal(f"{T('Cancel task')}###cancel_task", None,
+                                     imgui.WindowFlags_.always_auto_resize | imgui.WindowFlags_.no_saved_settings)[0]
+    _modal_style(False)
+    if opened:
+        n = max(1, len(t.files))
+        imgui.text(T("Cancel “{name}”? {done} of {total} are done; they are kept.", name=task_label(t),
+                     done=(t.file[0] - 1) if t.file else 0, total=n))
+        imgui.dummy(imgui.ImVec2(0, 4))
+        imgui.push_style_color(imgui.Col_.text, C("danger"))
+        if imgui.button(T("Cancel task")):
+            app.tasks.cancel(t)
+            app.cancel_ask = None
+            imgui.close_current_popup()
+        imgui.pop_style_color()
+        imgui.same_line()
+        if imgui.button(T("Keep running")) or imgui.is_key_pressed(imgui.Key.escape, False):
+            app.cancel_ask = None
+            imgui.close_current_popup()
+        imgui.end_popup()
+
+
+def about_dialog(app):
+    if not app.show_about:
+        return
+    if not imgui.is_popup_open("###about"):
+        imgui.open_popup("###about")
+    vp = imgui.get_main_viewport()
+    imgui.set_next_window_pos(imgui.ImVec2(vp.work_pos.x + vp.work_size.x / 2, vp.work_pos.y + vp.work_size.y / 2),
+                              imgui.Cond_.appearing, imgui.ImVec2(0.5, 0.5))
+    _modal_style()
+    opened = imgui.begin_popup_modal(f"{T('About jev-recorder')}###about", None,
+                                     imgui.WindowFlags_.always_auto_resize | imgui.WindowFlags_.no_saved_settings)[0]
+    _modal_style(False)
+    if opened:
+        from ..cli import __version__
+        imgui.text(f"jev-recorder {__version__}")
+        th.small("Offline recorder archive: evidence-grade clips, transcripts, summaries and search.")
+        th.small("github.com/jstdlee/jev-recorder")
+        imgui.dummy(imgui.ImVec2(0, 4))
+        if imgui.button(T("Close")) or imgui.is_key_pressed(imgui.Key.escape, False):
+            app.show_about = False
+            imgui.close_current_popup()
+        imgui.end_popup()
 
 
 LEVELS = [("error", th.ICON_ERROR, "danger", "Error"), ("warning", th.ICON_WARN, "warn", "Warning"),
@@ -491,6 +643,19 @@ def remember_pos(app, key):
 
 
 # ---------------------------------------------------------------- command palette (Ctrl+P)
+def _loose(tk, hay):
+    starts = [i for i, ch in enumerate(hay) if ch == tk[0] and (i == 0 or hay[i - 1] == " ")]
+    for i in starts:
+        j, n = i, 0
+        while j < len(hay) and n < len(tk) and j - i <= len(tk) * 3:
+            if hay[j] == tk[n]:
+                n += 1
+            j += 1
+        if n == len(tk):
+            return True
+    return False
+
+
 def _score(q_tokens, hay):
     if not q_tokens:
         return 1
@@ -498,9 +663,8 @@ def _score(q_tokens, hay):
     for tk in q_tokens:
         k = hay.find(tk)
         if k < 0:
-            # loose: the letters in order (typing "trnew" finds "transcribe new")
-            it = iter(hay)
-            if len(tk) >= 3 and all(ch in it for ch in tk):
+            # loose: the letters in order from a word start, within a short span ("trnew" finds "transcribe new")
+            if len(tk) >= 3 and _loose(tk, hay):
                 score += 1
                 continue
             return 0
@@ -516,10 +680,10 @@ def palette_items(app, q):
     for c in COMMANDS:
         if c.run is None or (c.when and not c.when(app)):
             continue
-        hay = fold(" ".join([T(c.label), c.label] + c.aliases))
+        hay = fold(" ".join([cmd_label(c), c.label] + c.aliases))
         s = _score(toks, hay)
         if s:
-            out.append((s + 3, "Commands", c.icon or th.ICON_BULB, T(c.label), "", keys_for(c.id),
+            out.append((s + 3, "Commands", c.icon or th.ICON_BULB, cmd_label(c), "", keys_for(c.id),
                         (lambda cc=c: cc.run(app))))
     if toks:
         for sec, title, desc, _ in _settings_rows(app):
@@ -540,22 +704,27 @@ def palette_items(app, q):
             s = _score(toks, hay)
             if s:
                 out.append((s - 2, "Talks", th.ICON_TALKS, c.title or T("not transcribed"),
-                            f"{c.speech_start:%a %-d %b  %H:%M}", "", (lambda cc=c: app.select(cc))))
+                            f"{i18n.fmt_date(c.speech_start, year=False)}  {c.speech_start:%H:%M}", "", (lambda cc=c: app.select(cc))))
         if len(q.strip()) >= 2:
             try:
                 from .. import libsearch
                 hits = [h for h in libsearch.search(app.convs, q, limit=60) if h[2] == "row"][:8]
             except Exception:
                 hits = []
+            terms = [fold(t) for t in q.split() if not t.startswith(("-", "/")) and ":" not in t]
             for c, i, _, _ in hits:
                 seg = c.segments[i]
-                out.append((1, "Transcript", th.ICON_TEXT, seg["text"][:90],
+                text = seg["text"]
+                if terms and not any(t in fold(text) for t in terms):     # matched in a translation: show that
+                    text = next((tr[i] for tr in c.translations.values() if i in tr
+                                 and any(t in fold(tr[i]) for t in terms)), text)
+                out.append((1, "Transcript", th.ICON_TEXT, text[:90],
                             f"{seg['abs_start'][:16].replace('T', '  ')}  ·  {c.speaker(seg, i)}", "",
                             (lambda cc=c, ii=i, t=seg["_t0"]: app.goto_row(cc, ii, t, q))))
     else:
         recent = [CMD[r] for r in app.recent_cmds if r in CMD]
-        out = [(100 - k, "Recent", c.icon or th.ICON_BULB, T(c.label), "", keys_for(c.id), (lambda cc=c: cc.run(app)))
-               for k, c in enumerate(recent)] + [o for o in out if o[3] not in {T(c.label) for c in recent}]
+        out = [(100 - k, "Recent", c.icon or th.ICON_BULB, cmd_label(c), "", keys_for(c.id), (lambda cc=c: cc.run(app)))
+               for k, c in enumerate(recent)] + [o for o in out if o[3] not in {cmd_label(c) for c in recent}]
     order = {"Recent": 0, "Commands": 1, "Talks": 2, "Transcript": 3, "Settings": 4, "Help": 5}
     out.sort(key=lambda o: (order[o[1]], -o[0]))
     per = {}
@@ -633,7 +802,8 @@ def palette(app):
             if grp != last:
                 if last is not None:
                     imgui.dummy(imgui.ImVec2(0, 2))
-                th.small(grp.upper() if T(grp).isascii() else T(grp))
+                g = T(grp + " ") if grp in ("Settings", "Help", "Transcript") else T(grp)
+                th.small(g.upper() if g.isascii() else g)
                 last = grp
             selected = k == app.palette_sel
             p = imgui.get_cursor_screen_pos()
@@ -664,7 +834,7 @@ def palette(app):
     if run:
         app.palette_open = False
         if run[0] in ("Commands", "Recent"):
-            cid = next((c.id for c in COMMANDS if T(c.label) == run[2]), None)
+            cid = next((c.id for c in COMMANDS if cmd_label(c) == run[2]), None)
             if cid:
                 app.recent_cmds = [cid] + [r for r in app.recent_cmds if r != cid][:5]
                 app.prefs["recent_cmds"] = app.recent_cmds

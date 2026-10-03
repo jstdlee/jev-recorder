@@ -1,4 +1,7 @@
-"""Build a demo library from public test audio (FLEURS, AMI, AliMeeting in spike/data).
+"""Build a demo library from public test audio (FLEURS, AMI, AliMeeting, ASCEND in spike/data).
+
+ASCEND (CAiRE/ASCEND on Hugging Face, CC BY-SA 4.0): real, unscripted Hong Kong conversations that switch
+between Mandarin and English. spike/fetch_data.sh rebuilds each session with its real timing (ses2.wav).
 
   .venv/bin/python scripts/make_demo.py [~/jrec-demo]
   .venv/bin/jrec --config ~/jrec-demo/config.toml ui
@@ -82,6 +85,11 @@ def main():
     if not (card / "251003_1930.mp3").exists():
         recording(card / "251003_1930.mp3", datetime(2025, 10, 3, 19, 30, 40, tzinfo=TZ),
                   [(14 * 60, fleurs_talk("yue_hant_hk", 240, rng, 5), 0), (17 * 60, None, 0)], rng)
+    ascend = DATA / "ascend" / "ses2.wav"
+    if ascend.exists() and not (card / "251004_1015.mp3").exists():
+        talk = read16k(ascend)[60 * SR: 8 * 60 * SR]  # 7 min of a real two-person chat (sports, zh + en)
+        recording(card / "251004_1015.mp3", datetime(2025, 10, 4, 10, 15, 5, tzinfo=TZ),
+                  [(12 * 60, talk, 0), (15 * 60, None, 0)], rng)
     cfg = out / "config.toml"
     sys.path.insert(0, str(ROOT / "src"))
     from jrec import config

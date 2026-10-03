@@ -5,6 +5,7 @@ from imgui_bundle import imgui
 
 from .. import db
 from .. import theme as th
+from ..i18n import T
 from ..theme import C
 from .timeline import speaker_color
 
@@ -26,11 +27,16 @@ def _flow(width):
         imgui.new_line()
 
 
+MAX_REFS = 6
+
+
 def refs_buttons(app, c, refs, key):
+    """Time buttons for the rows an item comes from; long lists show the first few and '+N more'."""
+    refs = [r for r in (refs or []) if isinstance(r, int) and 0 <= r < len(c.segments)]
+    opened = key in app.refs_open
+    shown = refs if opened or len(refs) <= MAX_REFS + 1 else refs[:MAX_REFS]
     first = True
-    for k, r in enumerate(refs or []):
-        if not isinstance(r, int) or not (0 <= r < len(c.segments)):
-            continue
+    for k, r in enumerate(shown):
         label = f"{c.segments[r]['abs_start'][11:19]}##{key}_{k}"
         if not first:
             _flow(imgui.calc_text_size(label.split("##")[0]).x + 16)
@@ -39,6 +45,11 @@ def refs_buttons(app, c, refs, key):
             app.select(c, c.segments[r]["_t0"])
             app.sel_row = (c.name, r)
         th.tip(c.segments[r]["text"][:200])
+    if len(shown) < len(refs):
+        more = T("+{n} more", n=len(refs) - len(shown))
+        _flow(imgui.calc_text_size(more).x + 16)
+        if imgui.small_button(f"{more}##more_{key}"):
+            app.refs_open.add(key)
 
 
 def support(item):
@@ -82,9 +93,9 @@ def draw(app, c):
     if not ins:
         imgui.dummy(imgui.ImVec2(0, 4))
         imgui.push_text_wrap_pos(0)
-        imgui.text_colored(C("text_dim"), "Find people, places, phone numbers, times and the rows that matter, and "
-                                          "guess how the speakers know each other. Rules work offline; LLM and jev "
-                                          "need their servers (Settings).")
+        imgui.text_colored(C("text_dim"), T("Find people, places, phone numbers, times and the rows that matter, and "
+                                            "guess how the speakers know each other. Rules work offline; LLM and jev "
+                                            "need their servers (Settings)."))
         imgui.pop_text_wrap_pos()
         return
     meta = ins.get("_meta", {})
@@ -102,7 +113,7 @@ def draw(app, c):
             actions(app, c, p, p.get("refs"), f"pe{j}")
             if p.get("speaker") and p.get("name") and c.names.get(p["speaker"]) != p["name"]:
                 _flow(200)
-                if imgui.small_button(f"Name {c.default_name(p['speaker'])} “{p['name']}”##pn{j}"):
+                if imgui.small_button(T("Name {who} “{name}”", who=c.default_name(p['speaker']), name=p['name']) + f"##pn{j}"):
                     db.set_speaker_name(app.con, c.name, p["speaker"], p["name"])
                     c.names = db.speaker_names(app.con, c.name)
                     app._cache = {}
@@ -120,7 +131,7 @@ def draw(app, c):
             actions(app, c, r, r.get("refs"), f"ro{j}")
             if spk and r.get("guess") and not c.names.get(spk):
                 _flow(100)
-                if imgui.small_button(f"Use as name##ru{j}"):
+                if imgui.small_button(T("Use as name") + f"##ru{j}"):
                     db.set_speaker_name(app.con, c.name, spk, r["guess"].strip().capitalize())
                     c.names = db.speaker_names(app.con, c.name)
                     app._cache = {}
@@ -157,7 +168,7 @@ def draw(app, c):
 
     imp = ins.get("important", [])
     if imp:
-        th.section(f"Important rows ({len(imp)})")
+        th.section(T("Important rows ({n})", n=len(imp)))
         for j, it in enumerate(sorted(imp, key=lambda x: x.get("ref", 0))):
             r = it.get("ref")
             if not isinstance(r, int) or not (0 <= r < len(c.segments)):

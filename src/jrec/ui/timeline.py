@@ -351,18 +351,18 @@ def context_menu(app, c):
         t = app.ctx_t
         th.small(f"{c.abs_at(t):%H:%M:%S}  ·  {fmt_offset(t)} into the clip")
         imgui.separator()
-        if imgui.menu_item("Play from here", "", False)[0]:
+        if imgui.menu_item(T("Play from here"), "", False)[0]:
             app.seek(c, t, play=True)
-        if imgui.menu_item("Add note here…", "M", False)[0]:
+        if imgui.menu_item(T("Add note here…"), "M", False)[0]:
             app.new_note(c, t)
-        if app.ctx_note and imgui.menu_item("Edit this note…", "", False)[0]:
+        if app.ctx_note and imgui.menu_item(T("Edit this note…"), "", False)[0]:
             app.edit_note(c, app.ctx_note)
         imgui.separator()
-        if imgui.menu_item("Set A here", "[", False)[0]:
+        if imgui.menu_item(T("Set A here"), "[", False)[0]:
             app.set_a(t)
-        if imgui.menu_item("Set B here", "]", False)[0]:
+        if imgui.menu_item(T("Set B here"), "]", False)[0]:
             app.set_b(t)
-        if app.range_ab and imgui.menu_item("Clear A–B", "Esc", False)[0]:
+        if app.range_ab and imgui.menu_item(T("Clear A–B"), "Esc", False)[0]:
             app.range_ab = None
         imgui.separator()
         on = bool(app.prefs.get("subtitles", True))

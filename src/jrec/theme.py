@@ -170,17 +170,18 @@ def card(id_, size=imgui.ImVec2(0, 0), padding=(14, 12), flags=0):
         imgui.pop_style_var()
 
 
-def seg_width(labels, icons=None):
-    labels = [T(l) for l in labels]
+def seg_width(labels, icons=None, translate=True):
+    labels = [T(l) for l in labels] if translate else list(labels)
     fw = imgui.get_font_size() * 0.75 * 1.5 + 6
     return 4 + sum(imgui.calc_text_size(l).x + 22 + (fw if icons and icons[i] else 0) for i, l in enumerate(labels))
 
 
-def seg(id_, value, options, labels=None, tips=None, icons=None, fill=None):
+def seg(id_, value, options, labels=None, tips=None, icons=None, fill=None, translate=True):
     """Segmented control: all options visible, the chosen one is a raised pill. Returns (changed, value).
     icons: optional per-option country codes; a small flag is drawn before the label.
     fill: total width to stretch to (segments share it equally), e.g. the sidebar's width."""
-    labels = [T(l) for l in (labels or [str(o) for o in options])]
+    labels = labels or [str(o) for o in options]
+    labels = [T(l) for l in labels] if translate else list(labels)
     fw = imgui.get_font_size() * 0.75 * 1.5 + 6
     dl = imgui.get_window_draw_list()
     p = imgui.get_cursor_screen_pos()
@@ -345,3 +346,6 @@ def key_chip(dl, pos, keys, scale=0.82):
 
 def chips_width(keys, scale=0.82):
     return sum(imgui.calc_text_size(k).x * scale + 11 for k in keys.split("+")) if keys else 0.0
+ICON_SQUARE = "\uf0c8"      # maximize
+ICON_CLONE = "\uf24d"       # restore
+ICON_ABOUT = "\uf05a"

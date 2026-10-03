@@ -108,7 +108,8 @@ def _settings_rows(app):
               "chunk": lambda: int(prof.get("chunk_chars", 256000)), "overlap": lambda: int(prof.get("overlap_chars", 8000)),
               "tto": lambda: app.prefs["translate_to"], "aeng": lambda: app.cfg.analysis.get("engine", "rules"),
               "asr": lambda: app.cfg.asr.get("engine", "qwen"),
-              "rmotion": lambda: bool(app.prefs.get("reduce_motion"))}
+              "rmotion": lambda: bool(app.prefs.get("reduce_motion")),
+              "kbdnav": lambda: bool(app.prefs.get("kbd_nav"))}
 
     def set_skip(v):
         app.skip_silence = v
@@ -173,6 +174,19 @@ def _settings_rows(app):
             else:
                 app.llm_edit["asr_lang"] = app.cfg.asr.get("language", "auto")
 
+    def folders_row(t, d):
+        from ..paths import cache_dir, config_dir
+        from .shell import open_folder
+        hl(app, t)
+        th.small(d)
+        for k, (label, path) in enumerate([("Open config folder", config_dir()), ("Open log folder", cache_dir()),
+                                           ("Open library folder", app.cfg.library)]):
+            if k:
+                imgui.same_line()
+            if th.button(f"{th.ICON_FOLDER}  {T(label)}##fold{k}"):
+                open_folder(path)
+            th.tip(str(path))
+
     def info_row(text):
         def render(t, d):
             hl(app, t)
@@ -182,10 +196,10 @@ def _settings_rows(app):
         return render
 
     return [
-        ("Appearance", "Theme", "System follows your desktop; applies at once (Ctrl+Shift+T)",
+        ("Appearance", "Theme", "System follows your desktop; applies at once",
          seg_row("theme", th.THEMES, None, lambda v: app.set_pref("theme", v))),
         ("Appearance", "Language", "Interface language; text from recordings is never changed",
-         seg_row("lang", ["system"] + i18n.LANGS, ["System"] + i18n.LANG_NAMES, lambda v: app.set_pref("lang", v))),
+         seg_row("lang", ["system"] + i18n.LANGS, [T("System")] + i18n.LANG_NAMES, lambda v: app.set_pref("lang", v))),
         ("Appearance", "Text size", "Everything in the window; Ctrl+ Ctrl– Ctrl+0 too",
          seg_row("size", [1.0, 1.1, 1.25, 1.5], ["100%", "110%", "125%", "150%"], lambda v: app.set_pref("text_size", v))),
         ("Appearance", "Reduce motion", "Move the timeline at once instead of gliding; dialogs still fade",
@@ -226,6 +240,11 @@ def _settings_rows(app):
         ("Library", "Evidence", "What is never changed",
          info_row("Original recordings and clips are never changed. Notes, translations, names, moments and summaries "
                   "are kept separately in the library database.")),
+        ("Accessibility", "Keyboard focus", "Tab and the arrow keys move between controls; Esc returns the keys to the player",
+         seg_row("kbdnav", [False, True], ["Off", "On"], lambda v: app.set_pref("kbd_nav", v))),
+        ("Accessibility", "Screen readers", "",
+         info_row("Screen readers cannot read this app (Dear ImGui has no accessibility tree). Everything works from the keyboard.")),
+        ("Advanced", "Folders", "Config, logs and the library, in your file manager", folders_row),
     ]
 
 
@@ -268,13 +287,14 @@ def settings(app):
     if app.settings_query and th.clear_x("sq", "Clear the search"):
         app.settings_query = ""
     q = app.settings_query.strip().lower()
-    rows = [r for r in _settings_rows(app) if not q or q in (r[0] + " " + r[1] + " " + r[2]).lower()]
+    rows = [r for r in _settings_rows(app)
+            if not q or q in " ".join([r[0], r[1], r[2], T(r[0]), T(r[1]), T(r[2])]).lower()]
     imgui.push_style_color(imgui.Col_.child_bg, C("bg", 0.0))   # page background; the cards stand out
     imgui.begin_child("settings_body", imgui.ImVec2(0, 0))
     imgui.pop_style_color()
     if not rows:
         imgui.dummy(imgui.ImVec2(0, 10))
-        imgui.text_colored(C("text_dim"), f"No setting matches “{app.settings_query}”.")
+        imgui.text_colored(C("text_dim"), T("No results for “{q}”", q=app.settings_query))
     sections = []
     for sec, *_ in rows:
         if sec not in sections:
@@ -320,6 +340,7 @@ def _test_jev(app, jev):
 
 def hl(app, text, small=False):
     """Text with the settings search match highlighted (yellow wash behind the matched words)."""
+    text = T(text)
     if small:
         imgui.push_font(None, imgui.get_style().font_size_base * 0.88)
     q = app.settings_query.strip().lower()
@@ -340,12 +361,13 @@ def setting_row(app, title_, desc, id_, value, options, labels=None):
     """Magpie row: title + one grey line on the left, segmented control on the right."""
     labels = labels or [str(o) for o in options]
     y0 = imgui.get_cursor_pos_y()
-    hl(app, title_)
-    hl(app, desc, small=True)
+    hl(app, T(title_))
+    hl(app, T(desc), small=True)
     y1 = imgui.get_cursor_pos_y()
-    w = th.seg_width(labels)
+    raw = id_ == "lang"          # language names stay in their own language
+    w = th.seg_width(labels, translate=not raw)
     imgui.set_cursor_pos(imgui.ImVec2(imgui.get_window_width() - w - 14, y0 + (y1 - y0 - imgui.get_frame_height()) / 2 - 2))
-    ch, v = th.seg(id_, value, options, labels)
+    ch, v = th.seg(id_, value, options, labels, translate=not raw)
     imgui.set_cursor_pos(imgui.ImVec2(imgui.get_style().window_padding.x, y1))
     imgui.dummy(imgui.ImVec2(0, 0))
     return ch, v
@@ -465,7 +487,7 @@ def note_editor(app):
     if ne.get("id"):
         imgui.same_line()
         imgui.push_style_color(imgui.Col_.text, C("danger"))
-        if imgui.button("Delete note"):
+        if imgui.button(T("Delete note")):
             db.delete_note(app.con, ne["id"])
             c.notes = db.notes(app.con, c.name)
             imgui.close_current_popup()

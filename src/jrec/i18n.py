@@ -35,9 +35,51 @@ def lang():
     return _current
 
 
+MISSING = set() if os.environ.get("JREC_I18N_MISSING") else None   # dev: collect untranslated strings
+
+
+def _split(s):
+    """'<icon> Label##id' -> ('<icon> ', 'Label', '##id'): only the words are looked up."""
+    head = ""
+    while s and "\ue000" <= s[0] <= "\uf8ff":
+        head += s[0]
+        s = s[1:]
+    if head:
+        sp = len(s) - len(s.lstrip(" "))
+        head, s = head + s[:sp], s[sp:]
+    word, sep, tail = s.partition("##")
+    k = len(word)
+    while k and (word[k - 1] == " " or "\ue000" <= word[k - 1] <= "\uf8ff"):
+        k -= 1
+    return head, word[:k], word[k:] + (sep + tail if sep else "")
+
+
 def T(_s, **kw):
+    if _current != "en" and _s and ("\ue000" <= _s[0] <= "\uf8ff" or "\ue000" <= _s[-1] <= "\uf8ff" or "##" in _s):
+        head, word, tail = _split(_s)
+        return head + T(word, **kw) + tail
+    if _current != "en":
+        tab = TABLE.get(_current, {})
+        if MISSING is not None and _s not in tab and _s.strip() and not _s.isdigit():
+            MISSING.add(_s)
     out = TABLE.get(_current, {}).get(_s, _s) if _current != "en" else _s
     return out.format(**kw) if kw else out
+
+
+_WD = {"zh-CN": "一二三四五六日", "ja": "月火水木金土日", "ko": "월화수목금토일"}
+
+
+def fmt_date(dt, year=True, weekday=True):
+    """'Fri 3 Oct 2025' in English, '2025年10月3日 周五' / '2025年10月3日(金)' / '2025년 10월 3일 (금)'."""
+    if _current == "en":
+        return dt.strftime(("%a " if weekday else "") + "%-d %b" + (" %Y" if year else ""))
+    wd = _WD[_current][dt.weekday()]
+    if _current == "ko":
+        return (f"{dt.year}년 " if year else "") + f"{dt.month}월 {dt.day}일" + (f" ({wd})" if weekday else "")
+    d = (f"{dt.year}年" if year else "") + f"{dt.month}月{dt.day}日"
+    if not weekday:
+        return d
+    return d + (f" 周{wd}" if _current == "zh-CN" else f"({wd})")
 
 
 # English -> (zh-CN, ja, ko)
@@ -255,6 +297,146 @@ _ROWS = {
     "Nothing to show.": ("没有内容。", "表示するものはありません。", "표시할 것 없음."),
     "Transcribing new conversations": ("转写新对话", "新しい会話を文字起こし", "새 대화 전사"),
     "System follows your desktop; applies at once (Ctrl+Shift+T)": ("“跟随系统”随桌面设置；立即生效（Ctrl+Shift+T）", "「システム」はデスクトップに合わせます。すぐに反映（Ctrl+Shift+T）", "‘시스템’은 데스크톱을 따름, 즉시 적용 (Ctrl+Shift+T)"),
+    "{n} min": ("{n} 分钟", "{n} 分", "{n}분"),
+    "{n} notes": ("{n} 条笔记", "メモ {n} 件", "메모 {n}개"),
+    "{n} results": ("{n} 条结果", "{n} 件の結果", "결과 {n}개"),
+    "{n} files": ("{n} 个文件", "{n} ファイル", "파일 {n}개"),
+    "Conversation at {t}": ("{t} 的对话", "{t} の会話", "{t} 대화"),
+    "talk {a}–{b} ({n} min)": ("对话 {a}–{b}（{n} 分钟）", "会話 {a}–{b}（{n} 分）", "대화 {a}–{b} ({n}분)"),
+    "kept {a}–{b} with 10 min either side": ("保留 {a}–{b}，前后各 10 分钟", "前後 10 分を含め {a}–{b} を保存", "앞뒤 10분 포함 {a}–{b} 보관"),
+    "not transcribed yet": ("尚未转写", "まだ文字起こしされていません", "아직 전사 안 됨"),
+    "Add a note to this row": ("给这一行加笔记", "この行にメモを追加", "이 행에 메모 추가"),
+    "Copy text": ("复制文字", "テキストをコピー", "텍스트 복사"),
+    "Play row": ("播放这一行", "この行を再生", "이 행 재생"),
+    "Repeat row": ("重复这一行", "この行をリピート", "이 행 반복"),
+    "＋ Note": ("＋ 笔记", "＋ メモ", "＋ 메모"),
+    "Translate into English": ("翻译成英文", "英語に翻訳", "영어로 번역"),
+    "Export A–B ({n} s)": ("导出 A–B（{n} 秒）", "A–B を書き出し（{n} 秒）", "A–B 내보내기 ({n}초)"),
+    "Find people, places, phone numbers, times and the rows that matter, and guess how the speakers know each other. Rules work offline; LLM and jev need their servers (Settings).": (
+        "找出人物、地点、电话号码、时间和重要的行，并推测说话人之间的关系。规则离线可用；LLM 和 jev 需要各自的服务器（设置）。",
+        "人物・場所・電話番号・時刻・重要な行を見つけ、話者どうしの関係を推測します。ルールはオフラインで動作し、LLM と jev はそれぞれのサーバーが必要です（設定）。",
+        "사람, 장소, 전화번호, 시간, 중요한 행을 찾고 화자들의 관계를 추측합니다. 규칙은 오프라인으로 동작하고, LLM과 jev는 각 서버가 필요합니다(설정)."),
+    "No summary yet. Press Summarize above (needs the LLM server).": ("还没有摘要。按上方的“总结”（需要 LLM 服务器）。", "まだ要約はありません。上の「要約」を押してください（LLM サーバーが必要）。", "아직 요약이 없습니다. 위의 ‘요약’을 누르세요 (LLM 서버 필요)."),
+    "No tags yet. Add one here, or with + tag on a talk.": ("还没有标签。在这里添加，或在对话上用“+ 标签”。", "まだタグはありません。ここで追加するか、会話の「+ タグ」で追加します。", "아직 태그가 없습니다. 여기서 추가하거나 대화의 ‘+ 태그’로 추가하세요."),
+    "Nothing found. Try the LLM engine for people, places and relationships.": ("没有找到。人物、地点和关系可试试 LLM 引擎。", "見つかりません。人物・場所・関係は LLM エンジンを試してください。", "찾은 것 없음. 사람, 장소, 관계는 LLM 엔진을 써 보세요."),
+    "Not transcribed yet. Press Transcribe above.": ("尚未转写。按上方的“转写”。", "まだ文字起こしされていません。上の「文字起こし」を押してください。", "아직 전사되지 않았습니다. 위의 ‘전사’를 누르세요."),
+    "Original recordings and clips are never changed. Notes, translations, names, moments and summaries are kept separately in the library database.": (
+        "原始录音和片段永不改动。笔记、翻译、名字、片段和摘要另存在资料库数据库中。",
+        "元の録音とクリップは変更しません。メモ・翻訳・名前・モーメント・要約はライブラリのデータベースに別に保存します。",
+        "원본 녹음과 클립은 절대 바뀌지 않습니다. 메모, 번역, 이름, 순간, 요약은 라이브러리 데이터베이스에 따로 저장됩니다."),
+    "Your notes": ("你的笔记", "あなたのメモ", "내 메모"),
+    "Transcription": ("转写", "文字起こし", "전사"),
+    "Rules": ("规则", "ルール", "규칙"),
+    "LLM + jev check": ("LLM + jev 核查", "LLM + jev チェック", "LLM + jev 확인"),
+    "Test jev": ("测试 jev", "jev をテスト", "jev 테스트"),
+    "Original, Cantonese": ("原始，粤语", "オリジナル、広東語", "원본, 광둥어"),
+    "Analysing {t}": ("分析 {t}", "{t} を分析", "{t} 분석"),
+    "Summarising {t}": ("总结 {t}", "{t} を要約", "{t} 요약"),
+    "Transcribing {t}": ("转写 {t}", "{t} を文字起こし", "{t} 전사"),
+    "Translating {what} into {to}": ("把{what}翻译成 {to}", "{what}を {to} に翻訳", "{what}을(를) {to}(으)로 번역"),
+    "Making the cleaned copy": ("生成降噪副本", "ノイズ除去版を作成", "잡음 제거 사본 만들기"),
+    "LLM server not reachable at http://localhost:8888/v1": ("无法连接 LLM 服务器 http://localhost:8888/v1", "LLM サーバー http://localhost:8888/v1 に接続できません", "LLM 서버 http://localhost:8888/v1 에 연결할 수 없음"),
+    "Cantonese": ("粤语", "広東語", "광둥어"),
+    "Chinese": ("中文", "中国語", "중국어"),
+    "English": ("英语", "英語", "영어"),
+    "Malay": ("马来语", "マレー語", "말레이어"),
+    "New tag, e.g. 家庭 or roof": ("新标签，例如 家庭 或 roof", "新しいタグ（例：家庭、roof）", "새 태그, 예: 家庭 또는 roof"),
+    "Search: roof (price OR 屋顶) -friday": ("搜索：屋顶 (价格 OR roof) -星期五", "検索：屋根 (価格 OR roof) -金曜", "검색: 지붕 (가격 OR roof) -금요일"),
+    "Important rows ({n})": ("重要的行（{n}）", "重要な行（{n}）", "중요한 행 ({n})"),
+    "Use as name": ("用作名字", "名前に使う", "이름으로 사용"),
+    "Name {who} “{name}”": ("把 {who} 命名为“{name}”", "{who} を「{name}」と命名", "{who} 이름을 ‘{name}’(으)로"),
+    "Delete #{tag} from {n} places?": ("从 {n} 处删除 #{tag}？", "{n} か所から #{tag} を削除しますか？", "{n}곳에서 #{tag} 을(를) 삭제할까요?"),
+    "Delete #{tag}": ("删除 #{tag}", "#{tag} を削除", "#{tag} 삭제"),
+    "Plug in the recorder: the import dialog opens here. A copied folder can be imported with  jrec import <folder>.": (
+        "插入录音笔：导入对话框会在这里打开。复制出来的文件夹可用  jrec import <文件夹>  导入。",
+        "レコーダーを接続すると、ここに取り込みダイアログが開きます。コピーしたフォルダは  jrec import <フォルダ>  で取り込めます。",
+        "녹음기를 연결하면 여기서 가져오기 대화 상자가 열립니다. 복사한 폴더는  jrec import <폴더>  로 가져올 수 있습니다."),
+    "Voices show as Char 1, Char 2… Click a name in the By column of a transcript to say who it is.": (
+        "声音显示为 Char 1、Char 2…… 在转写的“说话人”列点击名字即可标明是谁。",
+        "声は Char 1、Char 2… と表示されます。文字起こしの「話者」列の名前をクリックして誰かを設定します。",
+        "목소리는 Char 1, Char 2… 로 표시됩니다. 대본의 ‘화자’ 열에서 이름을 클릭해 누구인지 정하세요."),
+    "Add a note (M or ＋ Note) or mark A–B and press Save as moment.": ("添加笔记（M 或 ＋ 笔记），或标记 A–B 后按“存为片段”。", "メモを追加（M または ＋ メモ）、または A–B を付けて「モーメントとして保存」。", "메모를 추가하거나 (M 또는 ＋ 메모) A–B를 표시하고 ‘순간으로 저장’을 누르세요."),
+    "Nothing matches. Hover ? for the search syntax.": ("没有匹配。把鼠标移到 ? 上查看搜索语法。", "一致なし。? にポインタを置くと検索の書き方を表示。", "일치 없음. ? 에 마우스를 올리면 검색 문법이 보입니다."),
+    "Delete note": ("删除笔记", "メモを削除", "메모 삭제"),
+    "Delete this moment": ("删除这个片段", "このモーメントを削除", "이 순간 삭제"),
+    "Add to the recording": ("加到录音上", "録音に追加", "녹음에 추가"),
+    "Play from here": ("从这里播放", "ここから再生", "여기서 재생"),
+    "Add note here…": ("在这里加笔记…", "ここにメモを追加…", "여기에 메모 추가…"),
+    "Edit this note…": ("编辑这条笔记…", "このメモを編集…", "이 메모 편집…"),
+    "Set A here": ("在这里设 A", "ここに A を設定", "여기에 A 설정"),
+    "Set B here": ("在这里设 B", "ここに B を設定", "여기에 B 설정"),
+    "Clear A–B": ("清除 A–B", "A–B を消去", "A–B 지우기"),
+    "Clear": ("清除", "消去", "지우기"),
+    "Hide": ("隐藏", "隠す", "숨기기"),
+    "Import": ("导入", "取り込む", "가져오기"),
+    "Find in this conversation (Ctrl+F)": ("在本对话中查找（Ctrl+F）", "この会話内を検索（Ctrl+F）", "이 대화에서 찾기 (Ctrl+F)"),
+    "Go to 14:15:30, +30, @5:00": ("跳到 14:15:30、+30、@5:00", "移動 14:15:30・+30・@5:00", "이동 14:15:30, +30, @5:00"),
+    "Theme: {name}": ("主题：{name}", "テーマ：{name}", "테마: {name}"),
+    "Language: {name}": ("语言：{name}", "言語：{name}", "언어: {name}"),
+    "About jev-recorder": ("关于 jev-recorder", "jev-recorder について", "jev-recorder 정보"),
+    "Open config folder": ("打开配置文件夹", "設定フォルダを開く", "설정 폴더 열기"),
+    "Open library folder": ("打开资料库文件夹", "ライブラリフォルダを開く", "라이브러리 폴더 열기"),
+    "Folders": ("文件夹", "フォルダ", "폴더"),
+    "Advanced": ("高级", "詳細", "고급"),
+    "Press Ctrl+P to find anything": ("按 Ctrl+P 查找任何内容", "Ctrl+P で何でも検索", "Ctrl+P 로 무엇이든 찾기"),
+    "Got it": ("知道了", "了解", "확인"),
+    "LLM server online": ("LLM 服务器在线", "LLM サーバー接続中", "LLM 서버 연결됨"),
+    "LLM server offline": ("LLM 服务器离线", "LLM サーバー未接続", "LLM 서버 꺼짐"),
+    "Cooling down": ("降温中", "冷却中", "식히는 중"),
+    "Waiting for GPU": ("等待 GPU", "GPU 待ち", "GPU 대기 중"),
+    "Paused by you": ("由你暂停", "あなたが一時停止", "직접 일시 중지함"),
+    "Interrupted": ("被中断", "中断されました", "중단됨"),
+    "Cancel “{name}”? {done} of {total} are done; they are kept.": ("取消“{name}”？已完成 {done}/{total}，会保留。", "「{name}」をキャンセルしますか？ {done}/{total} 件は完了済みで、残ります。", "‘{name}’을(를) 취소할까요? {done}/{total} 완료, 완료분은 유지됩니다."),
+    "Cancel task": ("取消任务", "タスクをキャンセル", "작업 취소"),
+    "Keep running": ("继续运行", "続ける", "계속 실행"),
+    "Minimize ": ("最小化", "最小化", "최소화"),
+    "Screen readers cannot read this app (Dear ImGui has no accessibility tree). Everything works from the keyboard.": (
+        "屏幕阅读器无法读取本应用（Dear ImGui 没有无障碍树）。所有功能都可用键盘操作。",
+        "スクリーンリーダーはこのアプリを読み上げられません（Dear ImGui にアクセシビリティツリーがありません）。すべてキーボードで操作できます。",
+        "화면 낭독기는 이 앱을 읽을 수 없습니다 (Dear ImGui 에 접근성 트리가 없음). 모든 기능은 키보드로 쓸 수 있습니다."),
+    "{n} rows": ("{n} 行", "{n} 行", "{n}행"),
+    "Move the timeline at once instead of gliding; dialogs still fade": ("时间轴直接跳转，不再滑动；对话框仍会淡入", "タイムラインを滑らかに動かさず即座に移動。ダイアログのフェードは残ります", "타임라인을 미끄러지지 않고 바로 이동, 대화 상자는 계속 페이드"),
+    "Label the timeline with the clock, or time since the clip starts": ("时间轴用时钟时间，或从片段开始计时", "タイムラインの目盛りを時刻、またはクリップ開始からの時間で表示", "타임라인에 시계 시간 또는 클립 시작부터의 시간 표시"),
+    "Clearer is a live noise filter; Cleaned plays the DeepFilterNet copy": ("“更清晰”是实时降噪；“降噪版”播放 DeepFilterNet 副本", "「クリア」は再生中のノイズフィルター、「ノイズ除去」は DeepFilterNet のコピーを再生", "‘더 선명하게’는 실시간 잡음 필터, ‘잡음 제거’는 DeepFilterNet 사본 재생"),
+    "Server": ("服务器", "サーバー", "서버"),
+    "Any OpenAI-compatible endpoint": ("任何兼容 OpenAI 的接口", "OpenAI 互換のエンドポイント", "OpenAI 호환 엔드포인트"),
+    "Model": ("模型", "モデル", "모델"),
+    "Name the server expects": ("服务器使用的模型名", "サーバーが期待するモデル名", "서버가 기대하는 모델 이름"),
+    "API key variable": ("API 密钥变量", "API キーの環境変数", "API 키 변수"),
+    "Read the key from this environment variable": ("从这个环境变量读取密钥", "この環境変数からキーを読みます", "이 환경 변수에서 키를 읽음"),
+    "Chunk size": ("分块大小", "チャンクサイズ", "청크 크기"),
+    "Long transcripts are summarised in parts this long (characters)": ("长转写按这个长度（字符）分段总结", "長い文字起こしはこの長さ（文字数）ごとに要約", "긴 대본은 이 길이(문자)씩 나눠 요약"),
+    "Overlap": ("重叠", "重なり", "겹침"),
+    "Each part repeats the end of the previous one, for context": ("每段重复上一段的结尾，保留上下文", "各部分は前の部分の終わりを繰り返し、文脈を保ちます", "각 부분은 앞 부분의 끝을 반복해 문맥 유지"),
+    "Translate into": ("翻译成", "翻訳先", "번역 대상"),
+    "Target language for the translate buttons": ("翻译按钮的目标语言", "翻訳ボタンの翻訳先言語", "번역 버튼의 대상 언어"),
+    "Connection": ("连接", "接続", "연결"),
+    "Check that the server answers": ("检查服务器是否响应", "サーバーが応答するか確認", "서버가 응답하는지 확인"),
+    "Speech model": ("语音模型", "音声モデル", "음성 모델"),
+    "Used by the next Transcribe; files already done keep their text": ("用于下次转写；已转写的文件保留原文字", "次の文字起こしで使用。完了済みのファイルはそのまま", "다음 전사에 사용, 이미 끝난 파일은 그대로"),
+    "Cohere language": ("Cohere 语言", "Cohere の言語", "Cohere 언어"),
+    "Engine": ("引擎", "エンジン", "엔진"),
+    "Rules work offline; LLM and jev need their servers": ("规则离线可用；LLM 和 jev 需要各自的服务器", "ルールはオフラインで動作。LLM と jev はサーバーが必要", "규칙은 오프라인 동작, LLM과 jev는 서버 필요"),
+    "jev server": ("jev 服务器", "jev サーバー", "jev 서버"),
+    "Julia-1 /v1/systemone, for relationship scores and checking claims": ("Julia-1 /v1/systemone，用于关系打分和核查说法", "Julia-1 /v1/systemone。関係の採点と主張の確認に使用", "Julia-1 /v1/systemone, 관계 점수와 주장 확인용"),
+    "jev model": ("jev 模型", "jev モデル", "jev 모델"),
+    "Model name the jev server expects": ("jev 服务器使用的模型名", "jev サーバーが期待するモデル名", "jev 서버가 기대하는 모델 이름"),
+    "jev connection": ("jev 连接", "jev 接続", "jev 연결"),
+    "Check that jev answers": ("检查 jev 是否响应", "jev が応答するか確認", "jev가 응답하는지 확인"),
+    "Folder": ("文件夹", "フォルダ", "폴더"),
+    "Where recordings, clips and the database live": ("录音、片段和数据库所在位置", "録音・クリップ・データベースの場所", "녹음, 클립, 데이터베이스 위치"),
+    "Evidence": ("证据", "証拠", "증거"),
+    "What is never changed": ("永不改动的内容", "決して変更しないもの", "절대 바뀌지 않는 것"),
+    "Accessibility": ("无障碍", "アクセシビリティ", "접근성"),
+    "Keyboard focus": ("键盘焦点", "キーボードフォーカス", "키보드 포커스"),
+    "Tab and the arrow keys move between controls; Esc returns the keys to the player": ("Tab 和方向键在控件间移动；按 Esc 把按键交回播放器", "Tab と矢印キーでコントロール間を移動。Esc でキーをプレーヤーに戻します", "Tab과 화살표 키로 컨트롤 사이 이동, Esc로 키를 플레이어에 돌려줌"),
+    "Screen readers": ("屏幕阅读器", "スクリーンリーダー", "화면 낭독기"),
+    "Config, logs and the library, in your file manager": ("在文件管理器中打开配置、日志和资料库", "設定・ログ・ライブラリをファイルマネージャーで開く", "설정, 로그, 라이브러리를 파일 관리자에서 열기"),
+    "System follows your desktop; applies at once": ("“跟随系统”随桌面设置；立即生效", "「システム」はデスクトップに合わせます。すぐに反映", "‘시스템’은 데스크톱을 따름, 즉시 적용"),
+    "Fit talk": ("适配对话", "会話に合わせる", "대화에 맞춤"),
+    "Whole": ("全部", "全体", "전체"),
+    "Test connection ": ("测试连接", "接続テスト", "연결 테스트"),
+    "+{n} more": ("另外 {n} 个", "ほか {n} 件", "{n}개 더"),
     "Show subtitles": ("显示字幕", "字幕を表示", "자막 표시"),
     "Pick a conversation": ("选择对话", "会話を選ぶ", "대화 선택"),
 }

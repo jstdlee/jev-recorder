@@ -6,6 +6,7 @@ original and its translation · speaker = rename · Open = the row in a window.
 from imgui_bundle import imgui
 
 from .. import theme as th
+from ..i18n import T
 from ..theme import C, U
 from .flags import lang_badge
 from .timeline import speaker_color
@@ -37,7 +38,7 @@ def fit(text, width):
 
 def draw(app, c):
     if not c.segments:
-        imgui.text_colored(C("text_dim"), "Not transcribed yet. Press Transcribe above.")
+        imgui.text_colored(C("text_dim"), T("Not transcribed yet. Press Transcribe above."))
         return
     if app.prefs.get("rows", "line") == "line":
         return draw_lines(app, c)
@@ -60,11 +61,11 @@ def draw_lines(app, c):
     if not imgui.begin_table("trl", 6, flags):
         return
     imgui.table_setup_scroll_freeze(0, 1)
-    imgui.table_setup_column("Time", imgui.TableColumnFlags_.width_fixed, 64 * ts)
+    imgui.table_setup_column(T("Time"), imgui.TableColumnFlags_.width_fixed, 64 * ts)
     imgui.table_setup_column("", imgui.TableColumnFlags_.width_fixed, 22 * ts)
-    imgui.table_setup_column("By", imgui.TableColumnFlags_.width_fixed, 70 * ts)
-    imgui.table_setup_column("Text", imgui.TableColumnFlags_.width_stretch, 4.0)
-    imgui.table_setup_column("Notes", imgui.TableColumnFlags_.width_stretch, 1.0)
+    imgui.table_setup_column(T("By"), imgui.TableColumnFlags_.width_fixed, 70 * ts)
+    imgui.table_setup_column(T("Text"), imgui.TableColumnFlags_.width_stretch, 4.0)
+    imgui.table_setup_column(T("Notes"), imgui.TableColumnFlags_.width_stretch, 1.0)
     imgui.table_setup_column("", imgui.TableColumnFlags_.width_fixed, 62 * ts)
     imgui.table_headers_row()
     row_h = imgui.get_frame_height() + 2
@@ -182,11 +183,11 @@ def draw_wrapped(app, c):
     if not imgui.begin_table("tr", 6, flags):
         return
     imgui.table_setup_scroll_freeze(0, 1)
-    imgui.table_setup_column("Time", imgui.TableColumnFlags_.width_fixed, 64 * ts)
+    imgui.table_setup_column(T("Time"), imgui.TableColumnFlags_.width_fixed, 64 * ts)
     imgui.table_setup_column("", imgui.TableColumnFlags_.width_fixed, 22 * ts)
-    imgui.table_setup_column("By", imgui.TableColumnFlags_.width_fixed, 70 * ts)
-    imgui.table_setup_column("Text", imgui.TableColumnFlags_.width_stretch, 3.0)
-    imgui.table_setup_column("Notes", imgui.TableColumnFlags_.width_stretch, 1.0)
+    imgui.table_setup_column(T("By"), imgui.TableColumnFlags_.width_fixed, 70 * ts)
+    imgui.table_setup_column(T("Text"), imgui.TableColumnFlags_.width_stretch, 3.0)
+    imgui.table_setup_column(T("Notes"), imgui.TableColumnFlags_.width_stretch, 1.0)
     imgui.table_setup_column("", imgui.TableColumnFlags_.width_fixed, 62 * ts)
     imgui.table_headers_row()
     n = len(c.segments)

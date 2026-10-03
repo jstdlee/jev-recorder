@@ -105,8 +105,10 @@ class App:
         self.palette_cache, self.palette_scroll, self.palette_age = None, False, 0
         self.recent_cmds = list(self.prefs.get("recent_cmds", []))
         self.show_sidebar = True
-        self.tasks = TaskQueue(cfg, self.cfg_path, on_finish=lambda t: setattr(self, "need_reload", True),
-                               on_log=self.log)
+        self.refs_open = set()       # Insights items whose full list of time buttons is open
+        self.show_about, self.cancel_ask, self.llm_online = False, None, None
+        threading.Thread(target=self._watch_llm, daemon=True).start()
+        self.tasks = TaskQueue(cfg, self.cfg_path, on_finish=self._task_finished, on_log=self.log)
         self.need_reload, self.flash = False, ""
         self.exit_reason = "the desktop closed the window (window manager, Alt+F4 or logout)"
         self.script = [s.strip() for s in script.split(",")] if script else []
@@ -165,7 +167,7 @@ class App:
         c = next((x for x in self.convs if x.name == name), None)
         if not c:
             return name
-        return f"{c.speech_start:%a %-d %b}  ·  {c.speech_start:%H:%M}  ·  {c.title or 'not transcribed yet'}"
+        return f"{i18n.fmt_date(c.speech_start, year=False)}  ·  {c.speech_start:%H:%M}  ·  {c.title or T('not transcribed yet')}"
 
     def update_matches(self):
         c = self.sel
@@ -301,6 +303,9 @@ class App:
             self.palette_open = False
             return
         self.palette_open, self.palette_focus, self.palette_q = True, True, ""
+        if not self.prefs.get("tip_palette_seen"):
+            self.prefs["tip_palette_seen"] = True
+            th.save_prefs(self.prefs)
         self.palette_sel, self.palette_cache, self.palette_age = 0, None, 0
 
     def toggle_tasks(self, tab=None):
@@ -355,6 +360,29 @@ class App:
     @property
     def job_busy(self):
         return self.tasks.running is not None
+
+    def _task_finished(self, t):
+        self.need_reload = True
+        # an OS notification only when nobody is looking and the task was long (> 30 s)
+        if t.elapsed() > 30 and not self.script and window.available() and not window.focused():
+            title = "jev-recorder"
+            body = f"{shell.task_label(t)}: {T(shell.STATE_NAME.get(t.state, t.state))}"
+            try:
+                if sys.platform.startswith("linux"):
+                    subprocess.Popen(["notify-send", "-a", title, title, body], stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+            except OSError:
+                pass
+
+    def _watch_llm(self):
+        """The status line says whether the summaries/translation server answers (checked every 30 s)."""
+        from .. import llm
+        while True:
+            try:
+                self.llm_online = llm.reachable(self.cfg.llm_profile(), timeout=2)
+            except Exception:
+                self.llm_online = False
+            time.sleep(30)
 
     def log(self, level, msg):
         self.logs.append((datetime.now().strftime("%H:%M:%S"), level, msg))
@@ -428,6 +456,16 @@ class App:
             self.reload()
         self._run_script()
         self.tasks.pump()
+        import jrec.ui as _ui
+        if _ui.FOCUS_REQUESTS and window.available():      # a second launch asked us to come forward
+            _ui.FOCUS_REQUESTS.clear()
+            window.focus()
+        self.edge_resize()
+        io = imgui.get_io()
+        nav = imgui.ConfigFlags_.nav_enable_keyboard
+        want = bool(self.prefs.get("kbd_nav"))     # Tab and arrows move focus; player keys then need Esc first
+        if bool(io.config_flags & nav) != want:
+            io.config_flags = (io.config_flags | nav) if want else (io.config_flags & ~nav)
         self.global_keys()
         vp = imgui.get_main_viewport()
         imgui.set_next_window_pos(vp.work_pos)
@@ -467,12 +505,46 @@ class App:
         imgui.end()
         shell.tasks_window(self)
         shell.help_window(self)
+        shell.cancel_dialog(self)
+        shell.about_dialog(self)
         dialogs.settings(self)   # its own windows, drawn last: float above the main window
         shell.palette(self)
         if self.quit:
+            self.save_geometry()
             if self.exit_reason.startswith("the desktop"):
                 self.exit_reason = "quit requested (Ctrl+Q, palette or --ui-script)"
             hello_imgui.get_runner_params().app_shall_exit = True
+
+    def edge_resize(self):
+        """4–6 px invisible borders resize the borderless window (hidden when maximized)."""
+        if not window.available() or window.maximized():
+            return
+        io = imgui.get_io()
+        vp = imgui.get_main_viewport()
+        if window.resizing():
+            if imgui.is_mouse_down(0):
+                window.resize_update()
+            else:
+                window.resize_end()
+                self.save_geometry()
+            edge = window._resize[0] if window.resizing() else ""
+        else:
+            x, y = io.mouse_pos.x - vp.pos.x, io.mouse_pos.y - vp.pos.y
+            edge = window.edge_at(x, y, vp.size.x, vp.size.y) if 0 <= x <= vp.size.x and 0 <= y <= vp.size.y else ""
+            if edge and imgui.is_mouse_clicked(0) and not imgui.is_any_item_active():
+                window.resize_begin(edge)
+        if edge:
+            imgui.set_mouse_cursor({"n": imgui.MouseCursor_.resize_ns, "s": imgui.MouseCursor_.resize_ns,
+                                    "e": imgui.MouseCursor_.resize_ew, "w": imgui.MouseCursor_.resize_ew,
+                                    "nw": imgui.MouseCursor_.resize_nwse, "se": imgui.MouseCursor_.resize_nwse,
+                                    "ne": imgui.MouseCursor_.resize_nesw, "sw": imgui.MouseCursor_.resize_nesw}[edge])
+
+    def save_geometry(self):
+        try:
+            self.prefs["window"] = window.geometry()
+            th.save_prefs(self.prefs)
+        except Exception:
+            pass
 
     def vsplit(self, id_, height=0.0):
         """A vertical divider you can drag sideways. Returns the drag distance this frame (0 if idle)."""
@@ -482,8 +554,8 @@ class App:
         delta = 0.0
         if imgui.is_item_hovered() or imgui.is_item_active():
             imgui.set_mouse_cursor(imgui.MouseCursor_.resize_ew)
-            imgui.get_window_draw_list().add_rect_filled(imgui.ImVec2(p.x + 6, p.y + h * 0.4),
-                                                          imgui.ImVec2(p.x + 8, p.y + h * 0.6), U("pill_border"), 1.0)
+            imgui.get_window_draw_list().add_line(imgui.ImVec2(p.x + 7, p.y + 4), imgui.ImVec2(p.x + 7, p.y + h - 4),
+                                                  U("accent"), 1.0)
         if imgui.is_item_active():
             delta = imgui.get_io().mouse_delta.x
         if imgui.is_item_deactivated():
@@ -509,6 +581,19 @@ class App:
             window.drag_end()
         if imgui.is_item_hovered() and imgui.is_mouse_double_clicked(0) and window.available():
             window.toggle_maximize()
+        if imgui.is_item_hovered() and imgui.is_mouse_clicked(1):
+            imgui.open_popup("titlebar_menu")
+        if imgui.begin_popup("titlebar_menu"):
+            if window.available():
+                if imgui.menu_item(T("Minimize"), "", False)[0]:
+                    window.minimize()
+                if imgui.menu_item(T("Maximize / restore"), "", False)[0]:
+                    window.toggle_maximize()
+                imgui.separator()
+            if imgui.menu_item(T("Close"), "Ctrl+Q", False)[0]:
+                self.exit_reason = "close from the title-bar menu"
+                self.quit = True
+            imgui.end_popup()
         dl = imgui.get_window_draw_list()
         dl.add_text(imgui.ImVec2(p.x + 4, p.y + (h - imgui.get_font_size()) / 2), U("text"), "jev-recorder")
         lib = str(self.cfg.library).replace(str(Path.home()), "~", 1)
@@ -524,9 +609,9 @@ class App:
         if window.available():
             def close():
                 self.exit_reason = "close button in the title bar"
-                window.close()
+                self.quit = True
             wins = [(th.ICON_MIN, "Minimize", window.minimize, None),
-                    (th.ICON_RESTORE if window.maximized() else th.ICON_MAX, "Maximize / restore", window.toggle_maximize, None),
+                    (th.ICON_CLONE if window.maximized() else th.ICON_SQUARE, "Maximize / restore", window.toggle_maximize, None),
                     (th.ICON_X, "Close", close, "danger")]
         x_win = p.x + w - len(wins) * (bw + 4)
         cluster_w = 4 * bw + 12
@@ -540,10 +625,17 @@ class App:
             imgui.set_cursor_screen_pos(imgui.ImVec2(x_win + k * (bw + 4), p.y + 4))
             imgui.push_style_color(imgui.Col_.button, C("bg", 0.0))
             imgui.push_style_color(imgui.Col_.text, C("text_dim"))
-            imgui.push_style_color(imgui.Col_.button_hovered, C(hover_col, 0.85) if hover_col else C("track"))
+            imgui.push_style_color(imgui.Col_.button_hovered, th.hexc("#e81123") if hover_col else C("track"))
+            if hover_col and imgui.is_mouse_hovering_rect(imgui.get_cursor_screen_pos(),
+                                                          imgui.ImVec2(imgui.get_cursor_screen_pos().x + bw,
+                                                                       imgui.get_cursor_screen_pos().y + bw)):
+                imgui.push_style_color(imgui.Col_.text, th.hexc("#ffffff"))   # white on Windows-red close
+                pushed = 4
+            else:
+                pushed = 3
             if imgui.button(f"{icon}##tb{k}", imgui.ImVec2(bw, bw)):
                 fn()
-            imgui.pop_style_color(3)
+            imgui.pop_style_color(pushed)
             th.tip(tip_)
         imgui.set_cursor_screen_pos(imgui.ImVec2(p.x, p.y + h + 2))
 
@@ -589,14 +681,14 @@ class App:
     # ------------------------------------------------------------ sidebar
     def sidebar(self):
         imgui.set_next_item_width(imgui.get_content_region_avail().x - (58 if self.query else 28))
-        changed, self.query = imgui.input_text_with_hint("##q", "Search: roof (price OR 屋顶) -friday", self.query)
+        changed, self.query = imgui.input_text_with_hint("##q", T("Search: roof (price OR 屋顶) -friday"), self.query)
         if changed:
             self.hits = self.run_search(self.query) if self.query.strip() else None
         if self.query and th.clear_x("q", "Clear the search"):
             self.query, self.hits = "", None
         imgui.same_line(0, 4)
         imgui.push_style_color(imgui.Col_.text, C("text_dim"))
-        imgui.button("?##qhelp")
+        imgui.button(T("?##qhelp"))
         imgui.pop_style_color()
         if imgui.is_item_hovered():
             imgui.set_tooltip(SEARCH_HELP)
@@ -645,11 +737,11 @@ class App:
             return []
 
     def side_hits(self):
-        th.section(f"{len(self.hits)} result{'s' if len(self.hits) != 1 else ''}")
+        th.section(T("{n} results", n=len(self.hits)))
         last = None
         for k, (c, i, kind, note) in enumerate(self.hits):
             if c is not last:
-                th.small(f"{c.speech_start:%a %-d %b  %H:%M}  ·  {c.title or 'Conversation'}"[:60])
+                th.small(f"{i18n.fmt_date(c.speech_start, year=False)}  {c.speech_start:%H:%M}  ·  {c.title or T('Conversation')}"[:60])
                 last = c
             if kind == "row":
                 s = c.segments[i]
@@ -664,7 +756,7 @@ class App:
                     self.sel_row = (c.name, i)
                 self.update_matches()
         if not self.hits:
-            imgui.text_colored(C("text_dim"), "Nothing matches. Hover ? for the search syntax.")
+            imgui.text_colored(C("text_dim"), T("Nothing matches. Hover ? for the search syntax."))
 
     def side_conversations(self):
         all_tags = self.cached("all_tags", lambda: db.all_tags(self.con))
@@ -684,8 +776,8 @@ class App:
         if not self.convs:
             th.section("Library is empty")
             imgui.push_text_wrap_pos(0)
-            imgui.text_colored(C("text_dim"), "Plug in the recorder: the import dialog opens here. "
-                                              "A copied folder can be imported with  jrec import <folder>.")
+            imgui.text_colored(C("text_dim"), T("Plug in the recorder: the import dialog opens here. "
+                                                "A copied folder can be imported with  jrec import <folder>."))
             imgui.pop_text_wrap_pos()
         day = None
         from ..query import fold
@@ -693,16 +785,17 @@ class App:
         for c in self.convs:
             if want and not want <= {fold(t) for t in c.tags}:
                 continue
-            d = c.speech_start.strftime("%a %-d %b %Y")
+            d = i18n.fmt_date(c.speech_start)
             if d != day:
                 imgui.dummy(imgui.ImVec2(0, 4 if day else 0))
                 th.section(d)
                 day = d
-            status = {"cut": "not transcribed", "transcribed": "transcribed",
-                      "summarized": "summarized"}.get(c.status, c.status)
-            extra = f"  ·  {len(c.notes)} note{'s' if len(c.notes) != 1 else ''}" if c.notes else ""
-            if self.list_row(c.name, c.title or f"Conversation at {c.speech_start:%H:%M}",
-                             f"{c.speech_start:%H:%M}  ·  {(c.sp1 - c.sp0) / 60:.0f} min  ·  {status}{extra}",
+            status = T({"cut": "not transcribed", "transcribed": "transcribed",
+                        "summarized": "summarized"}.get(c.status, c.status))
+            extra = "  ·  " + T("{n} notes", n=len(c.notes)) if c.notes else ""
+            if self.list_row(c.name, c.title or T("Conversation at {t}", t=f"{c.speech_start:%H:%M}"),
+                             f"{c.speech_start:%H:%M}  ·  " + T("{n} min", n=f"{(c.sp1 - c.sp0) / 60:.0f}")
+                             + f"  ·  {status}{extra}",
                              c is self.sel):
                 self.select(c)
 
@@ -721,8 +814,8 @@ class App:
         if not people:
             th.section("No names yet")
             imgui.push_text_wrap_pos(0)
-            imgui.text_colored(C("text_dim"), "Voices show as Char 1, Char 2… Click a name in the By column of a "
-                                              "transcript to say who it is.")
+            imgui.text_colored(C("text_dim"), T("Voices show as Char 1, Char 2… Click a name in the By column of a "
+                                                "transcript to say who it is."))
             imgui.pop_text_wrap_pos()
             return
         for name in sorted(people):
@@ -736,7 +829,7 @@ class App:
                     if c.name not in where:
                         continue
                     rows = [i for i, s in enumerate(c.segments) if c.speaker(s, i) == name]
-                    th.section(f"{c.speech_start:%a %-d %b  %H:%M}  ·  {len(rows)} rows")
+                    th.section(f"{i18n.fmt_date(c.speech_start, year=False)}  {c.speech_start:%H:%M}  ·  " + T("{n} rows", n=len(rows)))
                     for i in rows[:40]:
                         s = c.segments[i]
                         if imgui.selectable(f"{s['abs_start'][11:19]}  {s['text'][:60]}##pr{c.name}{i}", False)[0]:
@@ -775,10 +868,10 @@ class App:
     def side_tags(self):
         """Tag management: create, rename (onto an existing name = merge), delete, see usage, filter talks."""
         imgui.set_next_item_width(imgui.get_content_region_avail().x - 60)
-        enter, self.new_tag = imgui.input_text_with_hint("##newtag", "New tag, e.g. 家庭 or roof", self.new_tag,
+        enter, self.new_tag = imgui.input_text_with_hint("##newtag", T("New tag, e.g. 家庭 or roof"), self.new_tag,
                                                          imgui.InputTextFlags_.enter_returns_true)
         imgui.same_line(0, 4)
-        if (imgui.button("Add") or enter) and self.new_tag.strip():
+        if (imgui.button(T("Add")) or enter) and self.new_tag.strip():
             db.create_tag(self.con, self.new_tag)
             self.new_tag, self._cache = "", {}
         tags = self.cached("all_tags", lambda: db.all_tags(self.con))
@@ -797,7 +890,7 @@ class App:
                     self.tag_edit[2] = False
                 enter, self.tag_edit[1] = imgui.input_text("##ren", self.tag_edit[1], imgui.InputTextFlags_.enter_returns_true)
                 imgui.same_line(0, 4)
-                if imgui.button("Save") or enter:
+                if imgui.button(T("Save")) or enter:
                     merged = self.tag_edit[1].strip() in tags and self.tag_edit[1].strip() != tag
                     db.rename_tag(self.con, tag, self.tag_edit[1])
                     self.flash = f"Merged #{tag} into #{self.tag_edit[1].strip()}" if merged else ""
@@ -836,10 +929,10 @@ class App:
                 imgui.pop_style_color(2)
                 th.tip("Delete this tag everywhere")
                 if imgui.begin_popup("confirm_del"):
-                    imgui.text(f"Delete #{tag} from {n} place{'s' if n != 1 else ''}?")
+                    imgui.text(T("Delete #{tag} from {n} places?", tag=tag, n=n))
                     th.small("Only the tag goes; recordings and talks are not touched.")
                     imgui.push_style_color(imgui.Col_.text, C("danger"))
-                    if imgui.button(f"Delete #{tag}"):
+                    if imgui.button(T("Delete #{tag}", tag=tag)):
                         db.delete_tag(self.con, tag)
                         self._cache, self.tag_filter = {}, self.tag_filter - {tag}
                         for c in self.convs:
@@ -847,7 +940,7 @@ class App:
                         imgui.close_current_popup()
                     imgui.pop_style_color()
                     imgui.same_line()
-                    if imgui.button("Cancel"):
+                    if imgui.button(T("Cancel")):
                         imgui.close_current_popup()
                     imgui.end_popup()
                 if open_:
@@ -856,7 +949,7 @@ class App:
                     for kind, target in used:
                         if kind == "conversation" and target in by_name:
                             c = by_name[target]
-                            if imgui.selectable(f"{c.speech_start:%a %-d %b %H:%M}  {c.title or 'Conversation'}##u{target}",
+                            if imgui.selectable(f"{i18n.fmt_date(c.speech_start, year=False)} {c.speech_start:%H:%M}  {c.title or T('Conversation')}##u{target}",
                                                 c is self.sel)[0]:
                                 self.select(c)
                         elif kind == "source":
@@ -873,7 +966,7 @@ class App:
         if not items:
             th.section("Nothing saved yet")
             imgui.push_text_wrap_pos(0)
-            imgui.text_colored(C("text_dim"), "Add a note (M or ＋ Note) or mark A–B and press Save as moment.")
+            imgui.text_colored(C("text_dim"), T("Add a note (M or ＋ Note) or mark A–B and press Save as moment."))
             imgui.pop_text_wrap_pos()
             return
         by_name = {c.name: c for c in self.convs}
@@ -882,7 +975,7 @@ class App:
             when = it["abs"] if kind == "note" else it["abs_a"]
             d = when[:10]
             if d != day:
-                th.section(datetime.fromisoformat(when).strftime("%a %-d %b %Y"))
+                th.section(i18n.fmt_date(datetime.fromisoformat(when)))
                 day = d
             c = by_name.get(it["folder"])
             if kind == "note":
@@ -900,7 +993,7 @@ class App:
                     self.select(c, it["a"])
                     self.range_ab, self.loop = (it["a"], it["b"]), True
                 if imgui.begin_popup_context_item(f"mctx{it['id']}"):
-                    if imgui.menu_item("Delete this moment", "", False)[0]:
+                    if imgui.menu_item(T("Delete this moment"), "", False)[0]:
                         db.delete_moment(self.con, it["id"])
                         if c:
                             c.moments = db.moments(self.con, c.name)
@@ -929,9 +1022,10 @@ class App:
         imgui.text(c.title or f"Conversation at {c.speech_start:%H:%M}")
         imgui.pop_font()
         parts = len(c.manifest["parts"])
-        th.small(f"{c.speech_start:%a %-d %b %Y}  ·  talk {fmt_clock(c.abs_at(c.sp0))}–{fmt_clock(c.abs_at(c.sp1))} "
-                 f"({(c.sp1 - c.sp0) / 60:.0f} min)  ·  kept {fmt_clock(c.start)}–{fmt_clock(c.end)} "
-                 f"with 10 min either side" + (f"  ·  {parts} files" if parts > 1 else ""))
+        th.small(f"{i18n.fmt_date(c.speech_start)}  ·  " + T("talk {a}–{b} ({n} min)", a=fmt_clock(c.abs_at(c.sp0)),
+                 b=fmt_clock(c.abs_at(c.sp1)), n=f"{(c.sp1 - c.sp0) / 60:.0f}") + "  ·  "
+                 + T("kept {a}–{b} with 10 min either side", a=fmt_clock(c.start), b=fmt_clock(c.end))
+                 + ("  ·  " + T("{n} files", n=parts) if parts > 1 else ""))
         from ..cli import human_flag
         flags = sorted({human_flag(f) for p in c.manifest["parts"] for f in p["source_start"].get("flags", [])})
         confs = {p["source_start"].get("confidence") for p in c.manifest["parts"]} - {None}
@@ -1002,14 +1096,14 @@ class App:
                 self.summary_panel(c)
             else:
                 imgui.push_text_wrap_pos(0)
-                imgui.text_colored(C("text_dim"), "No summary yet. Press Summarize above (needs the LLM server).")
+                imgui.text_colored(C("text_dim"), T("No summary yet. Press Summarize above (needs the LLM server)."))
                 imgui.pop_text_wrap_pos()
         imgui.end_group()
 
     def preview(self, c):
         if not (self.sel_row and self.sel_row[0] == c.name and self.sel_row[1] < len(c.segments)):
             imgui.push_text_wrap_pos(0)
-            imgui.text_colored(C("text_dim"), "Click a row to read it here in full. Double-click plays it.")
+            imgui.text_colored(C("text_dim"), T("Click a row to read it here in full. Double-click plays it."))
             imgui.pop_text_wrap_pos()
             return
         i = self.sel_row[1]
@@ -1047,10 +1141,10 @@ class App:
                 self.edit_note(c, nt)
         imgui.pop_text_wrap_pos()
         imgui.end_child()
-        if imgui.button("Play"):
+        if imgui.button(T("Play")):
             self.seek(c, max(0.0, s["_t0"] - 0.2), play=True)
         imgui.same_line(0, 4)
-        if imgui.button("Repeat"):
+        if imgui.button(T("Repeat")):
             self.range_ab = (max(0.0, s["_t0"] - 0.3), min(c.duration, s["_t1"] + 0.3))
             self.loop = True
             self.seek(c, self.range_ab[0], play=True)
@@ -1066,7 +1160,7 @@ class App:
                      why="Already translated" if i in c.translations.get(to, {}) else "A job is running"):
             self.translate(c, to, rows=[i])
         imgui.same_line(0, 4)
-        if imgui.button("Copy"):
+        if imgui.button(T("Copy")):
             imgui.set_clipboard_text(s["text"])
 
     def tag_row(self, c):
@@ -1089,7 +1183,7 @@ class App:
                     self._cache = {}
                 imgui.pop_style_color(2)
         imgui.same_line(0, 8)
-        if imgui.small_button("+ tag"):
+        if imgui.small_button(T("+ tag")):
             self.tag_buf = ""
             imgui.open_popup("add_tag")
         if imgui.begin_popup("add_tag"):
@@ -1098,7 +1192,7 @@ class App:
             imgui.set_next_item_width(240)
             enter, self.tag_buf = imgui.input_text_with_hint("##tagin", "family, 装修, roof…", self.tag_buf,
                                                              imgui.InputTextFlags_.enter_returns_true)
-            on_rec = imgui.small_button("Add to the recording")
+            on_rec = imgui.small_button(T("Add to the recording"))
             th.tip("Tag the original recording instead (every talk cut from it shows it)")
             from ..query import fold
             q = fold(self.tag_buf.strip())
@@ -1189,7 +1283,7 @@ class App:
         playing = self.player.playing and self.player.conv is c
         ts = self.prefs["text_size"]
         imgui.push_style_var(imgui.StyleVar_.button_text_align, imgui.ImVec2(0.5, 0.5))
-        if imgui.button("Pause" if playing else "Play", imgui.ImVec2(72 * ts, 0)):
+        if imgui.button(T("Pause") if playing else T("Play"), imgui.ImVec2(72 * ts, 0)):
             self.toggle_play(c)
         imgui.pop_style_var()
         th.tip("Space")
@@ -1214,7 +1308,7 @@ class App:
         imgui.set_next_item_width(150 * ts)
         if self.goto_err:
             imgui.push_style_color(imgui.Col_.frame_bg, C("danger", 0.25))
-        enter, self.goto_buf = imgui.input_text_with_hint("##goto", "Go to 14:15:30, +30, @5:00", self.goto_buf,
+        enter, self.goto_buf = imgui.input_text_with_hint("##goto", T("Go to 14:15:30, +30, @5:00"), self.goto_buf,
                                                           imgui.InputTextFlags_.enter_returns_true)
         if self.goto_err:
             imgui.pop_style_color()
@@ -1231,16 +1325,16 @@ class App:
         self._fit(imgui.calc_text_size("＋ Note").x + 24)
         imgui.push_style_color(imgui.Col_.button, C("note", 0.22))
         imgui.push_style_color(imgui.Col_.button_hovered, C("note", 0.35))
-        if imgui.button("＋ Note"):
+        if imgui.button(T("＋ Note")):
             self.new_note(c, here)
         imgui.pop_style_color(2)
         th.tip("Add a note at the playhead (M)")
         self._fit(imgui.calc_text_size("Set ASet B").x + 50)
-        if imgui.button("Set A"):
+        if imgui.button(T("Set A")):
             self.set_a(here)
         th.tip("Start of the stretch to repeat, at the playhead ([)")
         imgui.same_line(0, 4)
-        if imgui.button("Set B"):
+        if imgui.button(T("Set B")):
             self.set_b(here)
         th.tip("End of the stretch, at the playhead (])")
         if self.range_ab:
@@ -1258,7 +1352,7 @@ class App:
                 self.range_ab, self.loop = None, False
             if self.range_ab:
                 imgui.same_line(0, 4)
-                if imgui.button("Save as moment"):
+                if imgui.button(T("Save as moment")):
                     self.moment_edit = {"conv": c, "a": a, "b": b, "label": "", "focus": True}
                 th.tip("Keep this stretch in Moments (left), with a label")
         else:
@@ -1310,7 +1404,7 @@ class App:
             imgui.set_keyboard_focus_here()
             self.focus_find = False
         imgui.set_next_item_width(220 * ts)
-        enter, new = imgui.input_text_with_hint("##find", "Find in this conversation (Ctrl+F)", self.find,
+        enter, new = imgui.input_text_with_hint("##find", T("Find in this conversation (Ctrl+F)"), self.find,
                                                 imgui.InputTextFlags_.enter_returns_true)
         if new != self.find:
             self.find, self.match_pos = new, None
@@ -1327,27 +1421,27 @@ class App:
                  else "matches show in yellow")
         if n:
             imgui.same_line()
-            if imgui.button("‹"):
+            if imgui.button(T("‹")):
                 self.goto_match(-1)
             th.tip("Previous match")
             imgui.same_line(0, 4)
-            if imgui.button("›"):
+            if imgui.button(T("›")):
                 self.goto_match(1)
             th.tip("Next match (Enter)")
             if self.match_pos is not None:
                 s = c.segments[self.match_idx[self.match_pos]]
                 imgui.same_line()
-                if imgui.button("Play nearby"):
+                if imgui.button(T("Play nearby")):
                     self.seek(c, max(0.0, s["_t0"] - 3.0), play=True)
                 th.tip("Start 3 s before the match, to hear it in context")
                 imgui.same_line(0, 4)
-                if imgui.button("Repeat"):
+                if imgui.button(T("Repeat")):
                     self.range_ab = (max(0.0, s["_t0"] - 1.0), min(c.duration, s["_t1"] + 1.0))
                     self.loop = True
                     self.seek(c, self.range_ab[0], play=True)
                 th.tip("Loop this match until stopped")
         # zoom, right-aligned
-        zw = imgui.calc_text_size("−+Fit talkWhole").x + 4 * 22
+        zw = imgui.calc_text_size("−+" + T("Fit talk") + T("Whole")).x + 4 * 22
         imgui.same_line(max(imgui.get_cursor_pos_x() + 10, imgui.get_window_width() - zw - 20))
         for label, fn, tip_ in (("−", lambda: self.zoom(c, 1.6, animate=True), "Zoom out (-)"),
                                 ("+", lambda: self.zoom(c, 0.6, animate=True),
@@ -1355,7 +1449,7 @@ class App:
                                 ("Fit talk", lambda: self.animate_view(clamp_view(c.sp0 - 15, c.sp1 + 15, c.duration)),
                                  "Show just the conversation"),
                                 ("Whole", lambda: self.animate_view((0.0, c.duration)), "Show the whole clip")):
-            if imgui.small_button(label):
+            if imgui.small_button(T(label)):
                 fn()
             th.tip(tip_)
             imgui.same_line(0, 4)
@@ -1485,6 +1579,10 @@ class App:
             self.palette_q, self.palette_cache = arg, None
         elif cmd == "help":
             self.open_help(arg or "concepts")
+        elif cmd == "about":
+            self.show_about = True
+        elif cmd == "helpmenu":
+            imgui.open_popup("help_menu")
         elif cmd == "lang":
             self.set_pref("lang", arg) if False else (i18n.set_lang(arg), self.use_lang_font())
         elif cmd == "theme":
@@ -1570,6 +1668,15 @@ def run(cfg, script=None):
     params = hello_imgui.RunnerParams()
     params.app_window_params.window_title = "jev-recorder"
     params.app_window_params.window_geometry.size = (1500, 950)
+    geo = app.prefs.get("window") or {}
+    if geo.get("max"):
+        params.app_window_params.window_geometry.window_size_state = hello_imgui.WindowSizeState.maximized
+    elif geo.get("w") and not script:
+        params.app_window_params.window_geometry.size = (max(720, geo["w"]), max(480, geo["h"]))
+        params.app_window_params.window_geometry.position_mode = hello_imgui.WindowPositionMode.from_coords
+        params.app_window_params.window_geometry.position = (geo["x"], geo["y"])
+    params.callbacks.before_exit = app.save_geometry
+
     # our own title bar (jrec.ui.window): no system frame; hello_imgui keeps a resize grip in the corner
     params.app_window_params.borderless = True
     params.app_window_params.borderless_movable = False
@@ -1595,4 +1702,6 @@ def run(cfg, script=None):
     if app.shot_path:
         from PIL import Image
         Image.fromarray(hello_imgui.final_app_window_screenshot()).save(app.shot_path)
+    if i18n.MISSING is not None:
+        Path(os.environ["JREC_I18N_MISSING"]).write_text("\n".join(sorted(i18n.MISSING)), encoding="utf-8")
     return app.exit_reason

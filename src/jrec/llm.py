@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 
 
@@ -15,9 +16,19 @@ def chat(profile, system, user, max_tokens=None):
     key = os.environ.get(profile["api_key_env"]) if profile.get("api_key_env") else profile.get("api_key")
     if key:
         req.add_header("Authorization", f"Bearer {key}")
-    with urllib.request.urlopen(req, timeout=profile.get("timeout", 900)) as r:
-        msg = json.loads(r.read())["choices"][0]["message"]
+    try:
+        with urllib.request.urlopen(req, timeout=profile.get("timeout", 900)) as r:
+            msg = json.loads(r.read())["choices"][0]["message"]
+    except urllib.error.HTTPError as e:
+        raise LLMError(f"LLM server at {profile['base_url']} answered {e.code} {e.reason}. "
+                       f"Check the model name ({profile['model']}) in Settings.") from e
+    except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+        raise LLMError(f"LLM server not found at {profile['base_url']}. Start it or change the address in Settings.") from e
     return msg.get("content") or ""
+
+
+class LLMError(RuntimeError):
+    """A plain-language error the UI shows as-is (no traceback)."""
 
 
 def parse_json(text):

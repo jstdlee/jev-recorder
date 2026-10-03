@@ -37,6 +37,38 @@ Diarization runs in `.venv-nemo` (Transformers >= 5); see `src/jrec/diarize.py`.
 - The Cohere model is gated: accept its terms on Hugging Face, then `hf auth login`.
 - One run only: `jrec transcribe --asr cohere FOLDER`. `transcript.json` records the model in `asr`.
 
+## Gallery
+
+Real audio, real model output. The demo meeting is a 4-person Mandarin table-microphone meeting from
+[AliMeeting](https://www.openslr.org/119/) (CC BY-SA 4.0), transcribed by Qwen3-ASR-1.7B. The summary, the
+Insights and the English translation come from a local LLM (Qwen3.8 Flash Next on TensorFold).
+
+| | |
+|---|---|
+| ![Main view: timeline with subtitles and an orange A–B range, transcript, preview and Insights](docs/gallery/main.png) | ![English translation of the Mandarin meeting with the LLM summary](docs/gallery/translated.png) |
+| **Dark.** Timeline with a subtitle under the playhead, an orange A–B range, the transcript, the preview and LLM Insights. | **Light.** The same meeting shown in English (LLM translation), with its LLM summary. |
+| ![Command palette: an English search finds lines of the Mandarin meeting through their translation](docs/gallery/palette.png) | ![Tasks and logs panel with running, waiting and failed tasks](docs/gallery/tasks.png) |
+| **Tokyo Night.** Ctrl+P: "gift" finds lines of the Mandarin meeting through their English translation. | **Tasks and logs** (Ctrl+J): progress, time left, Pause / Stop / Cancel / Retry. |
+| ![Settings in Japanese](docs/gallery/settings-ja.png) | ![Help, Shortcuts tab, in Korean](docs/gallery/help-ko.png) |
+| **日本語.** Settings: one setting per row, changes save at once. | **한국어.** Help › Shortcuts, generated from the command list. |
+| ![The whole app in Simplified Chinese](docs/gallery/zh-cn.png) | |
+| **简体中文.** Dates, labels and Help follow the interface language; recordings are never changed. | |
+
+### Demo library
+
+`scripts/make_demo.py` builds `~/jrec-demo` from public audio in `spike/data` (fetch it with `spike/fetch_data.sh`):
+
+| Recording | Source | Content |
+|---|---|---|
+| 2025-10-01 09:00, 120 min | [AMI](https://groups.inf.ed.ac.uk/ami/corpus/) (CC BY 4.0) + [FLEURS](https://huggingface.co/datasets/google/fleurs) Malay | English meeting, then a quieter Malay talk |
+| 2025-10-02 14:00 | [AliMeeting](https://www.openslr.org/119/) R8003 (CC BY-SA 4.0) | 6 min of a 4-person Mandarin meeting |
+| 2025-10-03 19:30 | [FLEURS](https://huggingface.co/datasets/google/fleurs) Cantonese (CC BY 4.0) | 4 min of read Cantonese |
+| 2025-10-04 10:15 | [ASCEND](https://huggingface.co/datasets/CAiRE/ASCEND) session 2 (CC BY-SA 4.0) | 7 min of a real, unscripted Hong Kong chat that switches between Mandarin and English |
+
+Each recording sits between 12 and 22 minutes of room tone, like a real recorder file, so the app has to find the
+conversation and keep 10 minutes of raw audio on each side. ASCEND sessions are rebuilt with their real timing
+(each utterance's start is in its file name), and `ses<N>.json` keeps the reference transcript for comparison.
+
 ## The desktop app
 
 - **Top bar** (no system title bar): drag it to move the window, double-click to maximise. Top right, always in
@@ -65,16 +97,30 @@ Diarization runs in `.venv-nemo` (Transformers >= 5); see `src/jrec/diarize.py`.
     choose **Show subtitles** to turn them on or off.
   - **A–B range** (Shift+drag, or [ and ]) shows in see-through orange on the timeline and the minimap.
     Drag its edges or its top strip to change it. Repeat it, save it as a moment, or export it byte-exact.
-- **Themes:** System (follows the desktop), Light, Dark and Tokyo Night; Ctrl+Shift+T cycles through them.
+- **Themes:** System (follows the desktop), Light, Dark and Tokyo Night. Change it in Settings, or type "theme" in
+  the search palette. There is no shortcut, because Ctrl+Shift+T means "reopen tab" in most apps.
 - **Languages:** English, 简体中文, 日本語 and 한국어. A switch applies at once, CJK glyphs included. Text from
   recordings is never translated by this setting.
 - Text is drawn oversampled and anti-aliased; Ctrl+= / Ctrl+- / Ctrl+0 change the text size.
 - **Dialogs** move by dragging any empty spot, remember where you left them, and stay inside the window.
   Double-click an empty spot to centre a dialog again. Every border between panes drags, and a double-click
   resets it. Ctrl+B hides the sidebar.
+- **Window:** drag the top bar to move it, double-click it to maximise, right-click it for Minimize, Maximize
+  and Close. Drag any edge or corner to resize. The size, position and maximised state come back on the next start.
+- **One window per library:** a second `jrec ui` for the same library brings the open window to the front.
+  The demo library and your real library can be open at the same time.
+- **Help menu** (the ? icon): Help (F1), Keyboard shortcuts (Ctrl+/), About. A one-time tip under the search
+  icon says "Press Ctrl+P to find anything".
+- **Status line** (Tasks and logs): "Ready · LLM server online", or the running task with its percentage, time
+  left and why it waits ("Cooling down", "Waiting for GPU"). An OS notification appears when a task longer than
+  30 s finishes while the window is in the background.
+- **Settings › Advanced:** buttons open the config folder, the log folder and the library folder.
+- **Accessibility:** Settings › Accessibility › Keyboard focus lets Tab and the arrow keys move between controls.
+  It is off by default because the arrows and Space control the player. Screen readers cannot read the app,
+  because Dear ImGui has no accessibility tree; everything works from the keyboard.
 - **Launch log:** `~/.cache/jrec/ui.log` (`%LOCALAPPDATA%\jrec\ui.log` on Windows) records each start, any crash,
   and why the window closed: the title-bar close button, a quit request, or the desktop (window manager,
-  Alt+F4, logout).
+  Alt+F4, logout). It rotates at 1 MB. `jrec --version` prints the version.
 
 | Keys | Action |
 |---|---|
@@ -82,7 +128,6 @@ Diarization runs in `.venv-nemo` (Transformers >= 5); see `src/jrec/diarize.py`.
 | Ctrl+J | Tasks and logs |
 | F1 / Ctrl+/ | Help / Keyboard shortcuts |
 | Ctrl+, | Settings |
-| Ctrl+Shift+T | Switch theme |
 | Ctrl+B | Show or hide the sidebar |
 | Ctrl+F / Ctrl+G | Find in this conversation / Go to a time |
 | Space, N, P | Play/pause, next/previous speech |

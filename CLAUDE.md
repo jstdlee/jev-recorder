@@ -32,13 +32,18 @@ Tasks and logs panel, Help), tasks.py (task queue, one job at a time, tasks.json
 languages), timeline.py, transcript.py, dialogs.py, player.py (ffplay child:
 speed/sound/channel), flags.py (drawn flags), data.py. Styling: polish-ui skill via theme.py tokens.
 Script steps for screenshots: open:N wait:S seek:T find:Q ab:A-B note:T/text row:N rowsel:N viewlang:L
-importdlg:PATH fakejob:i/n/stage/d/t tasks[:logs] palette:Q help:concepts|glossary|shortcuts lang:zh-CN settings settingsq:Q tab:conv|people|rec|moments
+importdlg:PATH fakejob:i/n/stage/d/t tasks[:logs] palette:Q help:concepts|glossary|shortcuts about lang:zh-CN settings settingsq:Q tab:conv|people|rec|moments
 person:NAME speaker:ROW newnote:T notetext:X righttab:insights|summary theme:System|Light|Dark|Tokyo Night size:1.5 shot:PATH.
 Every UI string goes through i18n.T("English") (en, zh-CN, ja, ko tables in src/jrec/i18n.py); new commands go
 into shell.COMMANDS so the palette, tooltips and Help › Shortcuts pick them up.
 Use a hard-linked copy of ~/jrec-demo/lib for screenshots that write notes/translations.
+Gallery: docs/gallery/*.png, regenerate with --ui-script and a fresh XDG_CONFIG_HOME (no leftover prefs).
+Untranslated strings: JREC_I18N_MISSING=/tmp/miss.txt jrec ui --ui-script "lang:zh-CN,...,shot:x" lists them.
+`jrec ui` is single-window per library (instance.py); --ui-script runs and JREC_MULTI_INSTANCE=1 skip the check.
 
-## Open items (2026-10-02)
+## Open items (2026-10-03)
+- Demo 2025-10-04 (ASCEND, real HK Mandarin–English chat) is cut but not transcribed: needs ~6 GiB and memory
+  was at 92 % (TensorFold holds 85 GiB). Run `jrec transcribe` on it when memory allows; compare with ses2.json.
 - Vault: age per-file, password + recovery key, lossless only; **waiting for the user's OK to build**.
 - Segments split mid-sentence at the 25 s limit; merge at sentence boundaries.
 - Tamil LID → Whisper fallback; Sony track-mark timestamps (needs a real TX660 file); vLLM backend.

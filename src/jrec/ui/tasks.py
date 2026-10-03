@@ -60,6 +60,8 @@ class Task:
         self.file = None      # (i, n, name) from PROGRESS file lines
         self.step = None      # (stage, done, total) from PROGRESS step lines
         self.wanted = None    # what the user asked for while running: paused / stopped / canceled
+        self.note = ""        # why a running task waits: "Cooling down", "Waiting for GPU"
+        self.on_done = None
 
     # ---------------------------------------------------------- progress
     def file_frac(self):
@@ -128,7 +130,7 @@ class TaskQueue:
                 if t.resumable:
                     t.state = "paused"
                 else:
-                    t.state, t.error = "failed", "The app closed while this was running"
+                    t.state, t.error = "failed", "Interrupted"
             self.tasks.append(t)
 
     def save(self):
@@ -211,18 +213,24 @@ class TaskQueue:
                 f = line.split()
                 try:
                     if f[1] == "file":
-                        t.file, t.step = (int(f[2]), int(f[3]), " ".join(f[4:])), None
+                        t.file, t.step, t.note = (int(f[2]), int(f[3]), " ".join(f[4:])), None, ""
                         name = " ".join(f[4:])
                         if name != "loading-models" and name not in t.files:
                             t.files.append(name)
                     elif f[1] == "step":
-                        t.step = (f[2], int(f[3]), int(f[4]))
+                        t.step, t.note = (f[2], int(f[3]), int(f[4])), ""
                 except (IndexError, ValueError):
                     pass
                 continue
             low = line.lower()
             if "it/s]" in low or "loading" in low:
                 continue
+            if "hot (" in low and "pausing" in low:
+                t.note = "Cooling down"
+            elif "another gpu job is running" in low:
+                t.note = "Waiting for GPU"
+            elif "cooled to" in low or line.startswith("["):
+                t.note = ""
             t.log.append(line.rstrip())
             t.log = t.log[-300:]
             if "error" in low or "traceback" in low:
