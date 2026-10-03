@@ -6,12 +6,13 @@ Configure in the LLM profile (Settings › Summaries and translation, or config.
   start_cmd = "docker start qwen38-flash-next-tf"   # how to start the server
   stop_cmd  = "docker stop qwen38-flash-next-tf"    # how to stop it
   memory_gib = 88          # what it needs, for the memory check before a start
-  idle_stop = 120          # seconds without LLM work before the app stops it (0 = right after the task)
+  idle_stop = 0            # seconds without LLM work before the app stops it (0 = right after the last task)
 
 With no start_cmd the server is not managed: the app only uses it when it is already running.
 
-Speech work (transcribe, process, enhance) needs the GPU memory, so it stops a managed server first;
-the next summary or translation starts it again (a cold boot takes about 2–4 minutes).
+Nothing is loaded when the app starts. Placing a summary, translation or LLM analysis in the task queue
+starts the cold boot at once (about 2–4 minutes), unless a transcription runs or waits ahead of it.
+Speech work (transcribe, process) needs the GPU memory, so it stops a managed server first.
 """
 import os
 import shlex

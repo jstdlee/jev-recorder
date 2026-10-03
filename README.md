@@ -25,8 +25,9 @@ Diarization runs in `.venv-nemo` (Transformers >= 5); see `src/jrec/diarize.py`.
 
 ## LLM server on demand (cold boot)
 
-The app does not load the LLM when it starts. It starts the server only when a task needs it (summary,
-translation, LLM Insights) and frees its memory again afterwards, so speech recognition has room.
+By default nothing is loaded: the app starts with no model in memory. Speech models load inside each
+transcription task and unload when it ends. The LLM server starts only when you place a task that needs it
+(summary, translation, LLM Insights) and stops after the last one, so speech recognition has room.
 Set it in Settings › Summaries and translation, or in the LLM profile:
 
 ```toml
@@ -34,14 +35,15 @@ Set it in Settings › Summaries and translation, or in the LLM profile:
 start_cmd = "docker start qwen38-flash-next-tf"   # how to start the server
 stop_cmd  = "docker stop qwen38-flash-next-tf"    # how to stop it
 memory_gib = 88          # checked against free memory before a start
-idle_stop = 120          # seconds after the last LLM task; 0 = at once, -1 = never
+idle_stop = 0            # seconds after the last LLM task; 0 = at once (default), -1 = never
 ```
 
-- A summary or translation starts the server when it is off and waits for it to answer (about 2–4 minutes for
-  a cold boot). The task row says "Starting LLM server".
+- Placing a summary or translation in the queue starts the cold boot at once (about 2–4 minutes), so the boot
+  overlaps the wait. The task row says "Starting LLM server". Several LLM tasks in a row share one boot.
+- If a transcription runs or waits ahead, the boot waits for it, because speech recognition needs the memory first.
 - Transcription stops the server first, so the speech models get the GPU memory.
 - The app refuses a start when free memory is lower than `memory_gib`, and says so in plain words.
-- When the app started the server, it stops it after `idle_stop` seconds without LLM work, and when the app closes.
+- When the app started the server, it stops it right after the last LLM task (`idle_stop`), and when the app closes.
 - Without `start_cmd` the server is yours: the app only uses it when it is already running, and never stops it.
 
 ## Speech model (Settings > Transcription, or `[asr]` in the config)

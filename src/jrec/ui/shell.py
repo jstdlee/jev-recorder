@@ -477,6 +477,8 @@ def _task_row(app, t):
         cur = app.conv_label(t.file[2]) if t.file and t.file[2] != "loading-models" else ""
         th.small((T(t.note) if t.note else t.stage_label(T)) + (f"  ·  {cur}" if cur else "")
                  + (f"  ·  {_dur(eta)} {T('left')}" if eta else ""), "warn" if t.note else "text_dim")
+    elif t.state == "queued" and t.note:
+        th.small(T(t.note), "warn")
     elif t.state == "paused":
         th.small(T("Paused by you"), "warn")
     elif t.state == "failed" and t.error:

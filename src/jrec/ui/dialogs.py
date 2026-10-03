@@ -106,7 +106,7 @@ def _settings_rows(app):
               "axis": lambda: app.prefs["axis"], "dspeed": lambda: app.player.speed,
               "dskip": lambda: app.skip_silence, "dsound": lambda: app.player.sound,
               "chunk": lambda: int(prof.get("chunk_chars", 256000)),
-              "idle": lambda: int(float(prof.get("idle_stop", 120))), "overlap": lambda: int(prof.get("overlap_chars", 8000)),
+              "idle": lambda: int(float(prof.get("idle_stop", 0))), "overlap": lambda: int(prof.get("overlap_chars", 8000)),
               "tto": lambda: app.prefs["translate_to"], "aeng": lambda: app.cfg.analysis.get("engine", "rules"),
               "asr": lambda: app.cfg.asr.get("engine", "qwen"),
               "rmotion": lambda: bool(app.prefs.get("reduce_motion")),

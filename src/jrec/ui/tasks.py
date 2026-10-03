@@ -24,6 +24,7 @@ from pathlib import Path
 STAGE_WEIGHT = {"asr": (0.0, 0.8), "align": (0.8, 0.1), "speakers": (0.9, 0.1), "summary": (0.0, 1.0),
                 "translate": (0.0, 1.0)}
 RESUMABLE = {"process"}
+SPEECH = {"process", "transcribe"}      # need the GPU memory: a managed LLM server is stopped for them
 ACTIVE = ("queued", "running", "paused")
 FINISHED = ("done", "failed", "canceled", "stopped")
 
@@ -129,6 +130,7 @@ class TaskQueue:
         self.closing = False
         self.llm_started = False      # a task of ours cold-booted the LLM server (we stop it when idle)
         self.llm_idle_since = None
+        self.llm_booting = False      # a cold boot runs in the background (started when an LLM task was placed)
         self._load()
 
     # ---------------------------------------------------------- persistence
@@ -191,7 +193,33 @@ class TaskQueue:
         self.tasks.append(t)
         self.on_log("info", f"Queued: {label}")
         self.save()
+        self.prewarm()
         return t
+
+    # ---------------------------------------------------------- LLM server: boot when an LLM task is placed
+    def _speech_ahead(self):
+        """A transcription runs or waits: it needs the memory first, so the LLM boot waits for it."""
+        return any(t.state in ("queued", "running") and t.args[:1] and t.args[0] in SPEECH for t in self.tasks)
+
+    def prewarm(self):
+        """Start the cold boot as soon as an LLM task is placed, so the 2–4 minutes overlap the wait."""
+        from .. import llmserver
+        prof = self.cfg.llm_profile()
+        if self.llm_booting or not llmserver.managed(prof) or self._speech_ahead():
+            return
+        if not any(t.state in ("queued", "running") and needs_llm(t.args, self.cfg) for t in self.tasks):
+            return
+        self.llm_booting = True
+
+        def boot():
+            try:
+                if llmserver.ensure_up(prof, lambda m: self.on_log("info", m.strip())):
+                    self.llm_started = True
+            except Exception as e:                      # the task itself reports it again when it runs
+                self.on_log("error", str(e))
+            finally:
+                self.llm_booting = False
+        threading.Thread(target=boot, daemon=True).start()
 
     def pump(self):
         """Call every frame: start the next waiting task when nothing runs; stop an idle LLM server."""
@@ -199,7 +227,16 @@ class TaskQueue:
         if self.running or self.paused_all:
             return
         t = next((t for t in self.tasks if t.state == "queued"), None)
+        if t and needs_llm(t.args, self.cfg) and t.args[0] not in SPEECH:
+            if self.llm_booting:              # wait for the boot that started when the task was placed
+                t.note = "Starting LLM server"
+                return
+            self.prewarm()                    # e.g. a transcription ahead of it has just finished
+            if self.llm_booting:
+                t.note = "Starting LLM server"
+                return
         if t:
+            t.note = ""
             self._start(t)
 
     def _llm_idle(self):
@@ -214,7 +251,7 @@ class TaskQueue:
         if self.llm_idle_since is None:
             self.llm_idle_since = time.monotonic()
         prof = self.cfg.llm_profile()
-        idle = float(prof.get("idle_stop", 120))
+        idle = float(prof.get("idle_stop", 0))
         if idle >= 0 and time.monotonic() - self.llm_idle_since >= idle:
             self.llm_started, self.llm_idle_since = False, None
             self.on_log("info", "LLM server idle: stopping it to free memory")

@@ -32,6 +32,12 @@ max_tokens = 32768        # thinking models spend many tokens reasoning
 chunk_chars = 256000      # long transcripts are summarised in chunks of this many characters
 overlap_chars = 8000      # ... each repeating the end of the previous chunk for context
 # api_key_env = "MY_KEY"  # read the key from an environment variable
+# The model is never loaded when the app starts. With these two commands the app starts the server when an
+# LLM task is placed in the queue (cold boot) and stops it after the last one, or before speech recognition:
+# start_cmd = "docker start my-llm-container"
+# stop_cmd = "docker stop my-llm-container"
+memory_gib = 0            # GiB the server needs; checked against free memory before a start (0 = no check)
+idle_stop = 0             # seconds after the last LLM task before it is stopped (0 = at once, -1 = never)
 
 # jev: Julia-1 choice scoring (/v1/systemone), used by `jrec analyze --engine jev|check`
 [jev]
