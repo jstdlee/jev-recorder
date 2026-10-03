@@ -26,7 +26,9 @@ def process_all(cfg, diarization=True, log=print):
     # 2. transcribe (GPU), newest conversations first so recent talk is searchable soonest
     todo = [r["folder"] for r in con.execute("SELECT folder FROM conversation WHERE status='cut' ORDER BY speech_start DESC")]
     if todo:
+        from . import llmserver
         with thermal.gpu_lock(cfg.library, log=log):
+            llmserver.ensure_down(cfg.llm_profile(), log, "to free memory for speech recognition")
             _transcribe_all(cfg, con, out, todo, diarization, log)
     _post(cfg, con, out, log)
 
@@ -59,11 +61,14 @@ def _post(cfg, con, out, log):
     # 4. summaries, if the LLM endpoint is up (otherwise they stay 'transcribed' for later)
     prof = cfg.llm_profile()
     pending = [r["folder"] for r in con.execute("SELECT folder FROM conversation WHERE status='transcribed'")]
-    if pending and llm_reachable(prof):
+    from . import llmserver
+    if pending and (llm_reachable(prof) or llmserver.managed(prof)):
+        started = llmserver.ensure_up(prof, log)          # cold boot when the app manages the server
         for name in pending:
             d = summarize.summarize_folder(out / name, prof, con)
             con.execute("UPDATE conversation SET status='summarized' WHERE folder=?", (name,))
             con.commit()
             log(f"summarized {name}: {d['title']}")
+        llmserver.after_task(prof, started, log)
     elif pending:
         log(f"LLM endpoint {prof['base_url']} not reachable: {len(pending)} summary(ies) left for later")

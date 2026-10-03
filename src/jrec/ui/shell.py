@@ -256,6 +256,9 @@ def status_text(app):
     llm = getattr(app, "llm_online", None)
     if llm is None:
         return T("Ready")
+    from .. import llmserver
+    if not llm and llmserver.managed(app.cfg.llm_profile()):
+        return T("Ready") + "  ·  " + T("LLM server off (starts when needed)")
     return T("Ready") + "  ·  " + (T("LLM server online") if llm else T("LLM server offline"))
 
 

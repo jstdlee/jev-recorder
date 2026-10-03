@@ -202,7 +202,9 @@ def cmd_transcribe(cfg, a):
     if not folders:
         print("nothing to transcribe")
         return
+    from . import llmserver
     with thermal.gpu_lock(cfg.library):
+        llmserver.ensure_down(cfg.llm_profile(), reason="to free memory for speech recognition")
         _transcribe_folders(cfg, con, folders, a)
 
 
@@ -243,14 +245,18 @@ def cmd_summarize(cfg, a):
     prof = cfg.llm_profile(a.llm)
     folders = [Path(f) for f in a.folders] or [cfg.library / "conversations" / r["folder"] for r in
                                                con.execute("SELECT folder FROM conversation WHERE status='transcribed'")]
+    if not folders:
+        print("nothing to summarize")
+        return
+    from . import llmserver
+    started = llmserver.ensure_up(prof)
     for i, f in enumerate(folders, 1):
         progress_line("file", i, len(folders), f.name)
         d = summarize.summarize_folder(f, prof, con, progress=lambda st, d_, t: progress_line("step", st, d_, t))
         con.execute("UPDATE conversation SET status='summarized' WHERE folder=?", (f.name,))
         con.commit()
         print(f"[{i}/{len(folders)}] {f.name}: {d['title']}")
-    if not folders:
-        print("nothing to summarize")
+    llmserver.after_task(prof, started)
 
 
 def cmd_translate(cfg, a):
@@ -259,10 +265,13 @@ def cmd_translate(cfg, a):
     prof = cfg.llm_profile(a.llm)
     rows = [int(x) for x in a.rows.split(",")] if a.rows else None
     f = Path(a.folder)
+    from . import llmserver
     progress_line("file", 1, 1, f.name)
+    started = llmserver.ensure_up(prof)
     out = translate.translate_folder(f, a.to, prof, con, rows,
                                      progress=lambda st, d, t: progress_line("step", st, d, t))
     print(f"{len(out)} row(s) in {a.to}")
+    llmserver.after_task(prof, started)
 
 
 def cmd_analyze(cfg, a):
@@ -270,9 +279,12 @@ def cmd_analyze(cfg, a):
     con = db.connect(cfg.db_path)
     f = Path(a.folder)
     engine = a.engine or cfg.analysis.get("engine", "rules")
+    from . import llmserver
     progress_line("file", 1, 1, f.name)
+    started = llmserver.ensure_up(cfg.llm_profile()) if engine in ("llm", "check") else False
     d = intel.analyze_folder(f, engine, cfg.llm_profile(), cfg.jev, con,
                              progress=lambda st, d_, t: progress_line("step", st, d_, t))
+    llmserver.after_task(cfg.llm_profile(), started)
     counts = {k: len(v) for k, v in d.items() if isinstance(v, list)}
     print(f"{f.name}: {engine}: {counts}  rules: { {k: len(v) for k, v in d['rules'].items()} }")
 

@@ -28,6 +28,18 @@ ACTIVE = ("queued", "running", "paused")
 FINISHED = ("done", "failed", "canceled", "stopped")
 
 
+def needs_llm(args, cfg):
+    """Does this job talk to the LLM server?"""
+    if not args:
+        return False
+    if args[0] in ("summarize", "translate"):
+        return True
+    if args[0] == "analyze":
+        eng = args[args.index("--engine") + 1] if "--engine" in args else cfg.analysis.get("engine", "rules")
+        return eng in ("llm", "check")
+    return args[0] == "process"          # process ends with summaries
+
+
 def kill_tree(proc, hard=False):
     """End a child and everything it started (Linux/macOS: its process group; Windows: taskkill /T)."""
     if proc is None or proc.poll() is not None:
@@ -115,6 +127,8 @@ class TaskQueue:
         self.path = Path(cfg.db_path).parent / "tasks.json"
         self.paused_all = False
         self.closing = False
+        self.llm_started = False      # a task of ours cold-booted the LLM server (we stop it when idle)
+        self.llm_idle_since = None
         self._load()
 
     # ---------------------------------------------------------- persistence
@@ -180,12 +194,42 @@ class TaskQueue:
         return t
 
     def pump(self):
-        """Call every frame: start the next waiting task when nothing runs."""
+        """Call every frame: start the next waiting task when nothing runs; stop an idle LLM server."""
+        self._llm_idle()
         if self.running or self.paused_all:
             return
         t = next((t for t in self.tasks if t.state == "queued"), None)
         if t:
             self._start(t)
+
+    def _llm_idle(self):
+        """After the last LLM task, wait `idle_stop` seconds, then free the server's memory (managed servers)."""
+        from .. import llmserver
+        if not self.llm_started:
+            return
+        busy = any(t.state in ("queued", "running") and needs_llm(t.args, self.cfg) for t in self.tasks)
+        if busy:
+            self.llm_idle_since = None
+            return
+        if self.llm_idle_since is None:
+            self.llm_idle_since = time.monotonic()
+        prof = self.cfg.llm_profile()
+        idle = float(prof.get("idle_stop", 120))
+        if idle >= 0 and time.monotonic() - self.llm_idle_since >= idle:
+            self.llm_started, self.llm_idle_since = False, None
+            self.on_log("info", "LLM server idle: stopping it to free memory")
+            threading.Thread(target=lambda: llmserver.ensure_down(prof, lambda m: self.on_log("info", m.strip()),
+                                                                   "(idle)"), daemon=True).start()
+
+    def stop_llm_if_ours(self):
+        """App closing: free the memory of a server we started (detached, so closing stays instant)."""
+        from .. import llmserver
+        prof = self.cfg.llm_profile()
+        if self.llm_started and llmserver.managed(prof):
+            import shlex
+            subprocess.Popen(shlex.split(prof["stop_cmd"]) if os.name != "nt" else prof["stop_cmd"],
+                             shell=os.name == "nt", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=os.name != "nt")
 
     def _start(self, t):
         cmd = [sys.executable, "-m", "jrec.cli"] + (["--config", str(self.cfg_path)] if self.cfg_path else []) + t.args
@@ -194,7 +238,8 @@ class TaskQueue:
         try:
             t.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                       encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, close_fds=True,
-                                      cwd=str(Path.home()), env={**os.environ, "PYTHONIOENCODING": "utf-8"}, **kw)
+                                      cwd=str(Path.home()), env={**os.environ, "PYTHONIOENCODING": "utf-8",
+                                                                 "JREC_LLM_KEEP": "1"}, **kw)
         except OSError as e:
             t.state, t.error = "failed", str(e)
             self.on_log("error", f"{t.label}: {e}")
@@ -225,7 +270,14 @@ class TaskQueue:
             low = line.lower()
             if "it/s]" in low or "loading" in low:
                 continue
-            if "hot (" in low and "pausing" in low:
+            if line.startswith("Starting LLM server"):
+                t.note = "Starting LLM server"
+                self.llm_started = True
+            elif line.startswith("Stopping LLM server"):
+                t.note = "Stopping LLM server"
+            elif "llm server ready" in low:
+                t.note = ""
+            elif "hot (" in low and "pausing" in low:
                 t.note = "Cooling down"
             elif "another gpu job is running" in low:
                 t.note = "Waiting for GPU"
@@ -336,6 +388,7 @@ class TaskQueue:
         """App closing: end the running child (it comes back paused or failed on the next start)."""
         self.closing = True
         self.save()
+        self.stop_llm_if_ours()
         t = self.running
         if t:
             kill_tree(t.proc)

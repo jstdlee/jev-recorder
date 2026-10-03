@@ -47,4 +47,6 @@ Untranslated strings: JREC_I18N_MISSING=/tmp/miss.txt jrec ui --ui-script "lang:
 - Vault: age per-file, password + recovery key, lossless only; **waiting for the user's OK to build**.
 - Segments split mid-sentence at the 25 s limit; merge at sentence boundaries.
 - Tamil LID → Whisper fallback; Sony track-mark timestamps (needs a real TX660 file); vLLM backend.
-- Summaries/translation need an LLM server (Qwen3.8 TensorFold on :8888 is stopped by default).
+- Summaries/translation need an LLM server. llmserver.py starts/stops it on demand when the profile has
+  start_cmd/stop_cmd (demo: docker start/stop qwen38-flash-next-tf, ~88 GiB, cold boot ~2–4 min).
+  Speech work stops it first. Never stop an unmanaged server (no start_cmd) from code.

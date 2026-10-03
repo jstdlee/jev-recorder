@@ -23,6 +23,27 @@ profiles, and `[llm.profiles.*]` endpoints. UI preferences sit next to it in `ui
 `~/.cache/jrec` / `%LOCALAPPDATA%\jrec`. Plan and decisions: [PLAN.md](PLAN.md).
 Diarization runs in `.venv-nemo` (Transformers >= 5); see `src/jrec/diarize.py`.
 
+## LLM server on demand (cold boot)
+
+The app does not load the LLM when it starts. It starts the server only when a task needs it (summary,
+translation, LLM Insights) and frees its memory again afterwards, so speech recognition has room.
+Set it in Settings › Summaries and translation, or in the LLM profile:
+
+```toml
+[llm.profiles.local]
+start_cmd = "docker start qwen38-flash-next-tf"   # how to start the server
+stop_cmd  = "docker stop qwen38-flash-next-tf"    # how to stop it
+memory_gib = 88          # checked against free memory before a start
+idle_stop = 120          # seconds after the last LLM task; 0 = at once, -1 = never
+```
+
+- A summary or translation starts the server when it is off and waits for it to answer (about 2–4 minutes for
+  a cold boot). The task row says "Starting LLM server".
+- Transcription stops the server first, so the speech models get the GPU memory.
+- The app refuses a start when free memory is lower than `memory_gib`, and says so in plain words.
+- When the app started the server, it stops it after `idle_stop` seconds without LLM work, and when the app closes.
+- Without `start_cmd` the server is yours: the app only uses it when it is already running, and never stops it.
+
 ## Speech model (Settings > Transcription, or `[asr]` in the config)
 
 | | Qwen3-ASR-1.7B (default) | [Cohere Transcribe 03-2026](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) |
